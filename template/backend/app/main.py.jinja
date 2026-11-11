@@ -37,8 +37,8 @@ def create_app() -> FastAPI:
 {%- if include_accounts %}
     application.include_router(accounts_router)
 {%- endif %}
-    application.add_middleware(RequestBodyLimitMiddleware)
     application.add_middleware(RateLimitRequestsMiddleware)
+    application.add_middleware(RequestBodyLimitMiddleware)
 {%- if include_accounts %}
     application.add_middleware(
         AllowedHostMiddleware,
