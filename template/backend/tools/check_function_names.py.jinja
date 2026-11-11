@@ -14,6 +14,9 @@ ALLOWED_VERBS = frozenset(
         "authenticate",
         "build",
         "check",
+{%- if include_worker %}
+        "claim",
+{%- endif %}
         "close",
         "collect",
         "complete",
@@ -28,6 +31,10 @@ ALLOWED_VERBS = frozenset(
         "drop",
         "dump",
         "emit",
+{%- if include_worker %}
+        "enqueue",
+        "fail",
+{%- endif %}
         "find",
         "forget",
         "generate",
@@ -58,7 +65,13 @@ ALLOWED_VERBS = frozenset(
         "refuse",
         "register",
         "remove",
+{%- if include_worker %}
+        "release",
+{%- endif %}
         "render",
+{%- if include_worker %}
+        "requeue",
+{%- endif %}
         "report",
         "require",
         "resolve",

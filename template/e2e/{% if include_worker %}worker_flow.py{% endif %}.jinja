@@ -1,0 +1,264 @@
+from collections.abc import Callable
+from pathlib import Path
+import sys
+import tempfile
+import time
+
+from pydantic import BaseModel, ConfigDict, ValidationError
+
+from flow_report import FlowCheckFailedError, FlowReport
+from stack_commands import (
+    ComposeStack,
+    StackCommandFailedError,
+    destroy_stack,
+    find_free_local_port,
+    prepare_compose_stack,
+    read_database_value,
+    run_compose,
+    start_stack,
+)
+
+JOB_TIMEOUT_SECONDS = 8
+JOB_LEASE_SECONDS = 10
+WORKER_FLOW_ENVIRONMENT_LINES = (
+    f"{{ environment_prefix }}_TASK_QUEUE_JOB_TIMEOUT_SECONDS={JOB_TIMEOUT_SECONDS}",
+    f"{{ environment_prefix }}_TASK_QUEUE_JOB_LEASE_SECONDS={JOB_LEASE_SECONDS}",
+)
+QUEUE_PROBE_MAXIMUM_ATTEMPTS = 3
+HELD_PROBE_SECONDS = 5
+COMPOSE_COMMAND_TIMEOUT_SECONDS = 60
+JOB_STATE_POLL_SECONDS = 0.25
+SUCCEEDED_WAIT_SECONDS = 15
+FAILED_WAIT_SECONDS = 40
+RECLAIMED_WAIT_SECONDS = JOB_LEASE_SECONDS + 15
+JOB_SUCCEEDED_MESSAGE = "Job succeeded"
+JOB_RETRY_SCHEDULED_MESSAGE = "Job raised; it runs again after the backoff"
+
+
+class JobState(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    status: str
+    attempt_count: int
+    last_error: str | None
+
+
+class WorkerLogLine(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    message: str
+    job_id: int | None = None
+
+
+class JobStateWait(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    was_reached: bool
+    job_state: JobState | None
+    waited_seconds: float
+
+
+def add_worker_flow_settings(compose_stack: ComposeStack) -> None:
+    with compose_stack.environment_file.open("a") as environment_file:
+        environment_file.write("\n".join(WORKER_FLOW_ENVIRONMENT_LINES) + "\n")
+
+
+def enqueue_queue_probe(compose_stack: ComposeStack, *, hold_seconds: int, outcome: str) -> int:
+    return int(
+        run_compose(
+            [
+                "exec",
+                "-T",
+                "api",
+                "python",
+                "-m",
+                "app",
+                "enqueue-queue-probe",
+                "--hold-seconds",
+                str(hold_seconds),
+                "--outcome",
+                outcome,
+            ],
+            compose_stack=compose_stack,
+            timeout_seconds=COMPOSE_COMMAND_TIMEOUT_SECONDS,
+        ).strip()
+    )
+
+
+def find_job_state(job_id: int, *, compose_stack: ComposeStack) -> JobState | None:
+    job_state_json = read_database_value(
+        "SELECT json_build_object('status', status, 'attempt_count', attempt_count, 'last_error', last_error) "  # noqa: S608  # job_id is an int the enqueue command printed
+        f"FROM jobs WHERE id = {job_id};",
+        compose_stack=compose_stack,
+    )
+    return JobState.model_validate_json(job_state_json) if job_state_json else None
+
+
+def wait_for_job_state(
+    job_id: int,
+    *,
+    compose_stack: ComposeStack,
+    is_reached: Callable[[JobState | None], bool],
+    timeout_seconds: float,
+) -> JobStateWait:
+    started_at = time.monotonic()
+    while True:
+        job_state = find_job_state(job_id, compose_stack=compose_stack)
+        waited_seconds = round(time.monotonic() - started_at, 1)
+        if is_reached(job_state) or waited_seconds >= timeout_seconds:
+            return JobStateWait(was_reached=is_reached(job_state), job_state=job_state, waited_seconds=waited_seconds)
+        time.sleep(JOB_STATE_POLL_SECONDS)
+
+
+def list_worker_log_lines(compose_stack: ComposeStack) -> list[WorkerLogLine]:
+    worker_log_lines: list[WorkerLogLine] = []
+    for raw_line in run_compose(
+        ["logs", "--no-color", "--no-log-prefix", "worker"],
+        compose_stack=compose_stack,
+        timeout_seconds=COMPOSE_COMMAND_TIMEOUT_SECONDS,
+    ).splitlines():
+        try:
+            worker_log_lines.append(WorkerLogLine.model_validate_json(raw_line))
+        except ValidationError:
+            continue
+    return worker_log_lines
+
+
+def count_job_log_lines(compose_stack: ComposeStack, *, job_id: int, message: str) -> int:
+    return sum(
+        1
+        for worker_log_line in list_worker_log_lines(compose_stack)
+        if worker_log_line.job_id == job_id and worker_log_line.message == message
+    )
+
+
+def is_job_gone(job_state: JobState | None) -> bool:
+    return job_state is None
+
+
+def is_job_failed(job_state: JobState | None) -> bool:
+    return job_state is not None and job_state.status == "failed"
+
+
+def is_job_running_first_attempt(job_state: JobState | None) -> bool:
+    return job_state is not None and job_state.status == "running" and job_state.attempt_count == 1
+
+
+def is_job_running_second_attempt(job_state: JobState | None) -> bool:
+    return job_state is not None and job_state.status == "running" and job_state.attempt_count == 2
+
+
+def check_job_runs_once(flow_report: FlowReport, *, compose_stack: ComposeStack) -> None:
+    job_id = enqueue_queue_probe(compose_stack, hold_seconds=0, outcome="succeed")
+    succeeded_wait = wait_for_job_state(
+        job_id, compose_stack=compose_stack, is_reached=is_job_gone, timeout_seconds=SUCCEEDED_WAIT_SECONDS
+    )
+    flow_report.require_check(
+        "job done",
+        passed=succeeded_wait.was_reached,
+        detail=f"job {job_id} left the queue {succeeded_wait.waited_seconds} s after the enqueue command returned",
+    )
+    succeeded_line_count = count_job_log_lines(compose_stack, job_id=job_id, message=JOB_SUCCEEDED_MESSAGE)
+    flow_report.record_check(
+        "job done once",
+        passed=succeeded_line_count == 1,
+        detail=f"the worker logged '{JOB_SUCCEEDED_MESSAGE}' {succeeded_line_count} time(s) for job {job_id}",
+    )
+
+
+def check_failing_job_ends_failed(flow_report: FlowReport, *, compose_stack: ComposeStack) -> None:
+    job_id = enqueue_queue_probe(compose_stack, hold_seconds=0, outcome="raise")
+    failed_wait = wait_for_job_state(
+        job_id, compose_stack=compose_stack, is_reached=is_job_failed, timeout_seconds=FAILED_WAIT_SECONDS
+    )
+    flow_report.require_check(
+        "failing job ends failed",
+        passed=failed_wait.was_reached,
+        detail=f"job {job_id} is {failed_wait.job_state} after {failed_wait.waited_seconds} s",
+    )
+    failed_state = failed_wait.job_state
+    flow_report.record_check(
+        "failed job used every attempt and kept its last error",
+        passed=failed_state is not None
+        and failed_state.attempt_count == QUEUE_PROBE_MAXIMUM_ATTEMPTS
+        and (failed_state.last_error or "").startswith("QueueProbeFailedError"),
+        detail=f"{failed_state}",
+    )
+    retry_line_count = count_job_log_lines(compose_stack, job_id=job_id, message=JOB_RETRY_SCHEDULED_MESSAGE)
+    flow_report.record_check(
+        "failing job was retried with backoff",
+        passed=retry_line_count == QUEUE_PROBE_MAXIMUM_ATTEMPTS - 1,
+        detail=f"the worker scheduled {retry_line_count} retries for job {job_id}",
+    )
+
+
+def check_killed_workers_job_is_reclaimed(flow_report: FlowReport, *, compose_stack: ComposeStack) -> None:
+    job_id = enqueue_queue_probe(compose_stack, hold_seconds=HELD_PROBE_SECONDS, outcome="succeed")
+    running_wait = wait_for_job_state(
+        job_id,
+        compose_stack=compose_stack,
+        is_reached=is_job_running_first_attempt,
+        timeout_seconds=SUCCEEDED_WAIT_SECONDS,
+    )
+    flow_report.require_check(
+        "held job is running", passed=running_wait.was_reached, detail=f"job {job_id} is {running_wait.job_state}"
+    )
+    run_compose(
+        ["kill", "--signal", "SIGKILL", "worker"],
+        compose_stack=compose_stack,
+        timeout_seconds=COMPOSE_COMMAND_TIMEOUT_SECONDS,
+    )
+    killed_at = time.monotonic()
+    orphaned_state = find_job_state(job_id, compose_stack=compose_stack)
+    flow_report.record_check(
+        "killed worker leaves the job running",
+        passed=is_job_running_first_attempt(orphaned_state),
+        detail=f"job {job_id} is {orphaned_state} after the worker got SIGKILL",
+    )
+    run_compose(["start", "worker"], compose_stack=compose_stack, timeout_seconds=COMPOSE_COMMAND_TIMEOUT_SECONDS)
+    reclaimed_wait = wait_for_job_state(
+        job_id,
+        compose_stack=compose_stack,
+        is_reached=is_job_running_second_attempt,
+        timeout_seconds=RECLAIMED_WAIT_SECONDS,
+    )
+    flow_report.require_check(
+        "job reclaimed after the lease",
+        passed=reclaimed_wait.was_reached,
+        detail=(
+            f"job {job_id} is {reclaimed_wait.job_state}, {round(time.monotonic() - killed_at, 1)} s after the kill "
+            f"(lease {JOB_LEASE_SECONDS} s)"
+        ),
+    )
+    finished_wait = wait_for_job_state(
+        job_id, compose_stack=compose_stack, is_reached=is_job_gone, timeout_seconds=SUCCEEDED_WAIT_SECONDS
+    )
+    flow_report.record_check(
+        "reclaimed job done",
+        passed=finished_wait.was_reached
+        and count_job_log_lines(compose_stack, job_id=job_id, message=JOB_SUCCEEDED_MESSAGE) == 1,
+        detail=f"job {job_id} left the queue {finished_wait.waited_seconds} s after it was reclaimed",
+    )
+
+
+def run_worker_flow() -> bool:
+    flow_report = FlowReport()
+    with tempfile.TemporaryDirectory() as environment_directory:
+        compose_stack = prepare_compose_stack(Path(environment_directory), api_publish_port=find_free_local_port())
+        add_worker_flow_settings(compose_stack)
+        try:
+            start_stack(compose_stack)
+            check_job_runs_once(flow_report, compose_stack=compose_stack)
+            check_failing_job_ends_failed(flow_report, compose_stack=compose_stack)
+            check_killed_workers_job_is_reclaimed(flow_report, compose_stack=compose_stack)
+        except StackCommandFailedError as stack_error:
+            flow_report.record_check("stack", passed=False, detail=str(stack_error))
+        except FlowCheckFailedError:
+            pass
+        finally:
+            destroy_stack(compose_stack)
+    return flow_report.has_passed()
+
+
+if __name__ == "__main__":
+    sys.exit(0 if run_worker_flow() else 1)

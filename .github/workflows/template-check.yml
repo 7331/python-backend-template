@@ -18,12 +18,23 @@ jobs:
           - option_set: no-postgres
             include_postgres: "false"
             include_accounts: "false"
+            include_worker: "false"
           - option_set: postgres
             include_postgres: "true"
             include_accounts: "false"
+            include_worker: "false"
           - option_set: postgres-accounts
             include_postgres: "true"
             include_accounts: "true"
+            include_worker: "false"
+          - option_set: postgres-accounts-worker
+            include_postgres: "true"
+            include_accounts: "true"
+            include_worker: "true"
+          - option_set: postgres-worker
+            include_postgres: "true"
+            include_accounts: "false"
+            include_worker: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -39,6 +50,7 @@ jobs:
         env:
           INCLUDE_POSTGRES: ${{ matrix.include_postgres }}
           INCLUDE_ACCOUNTS: ${{ matrix.include_accounts }}
+          INCLUDE_WORKER: ${{ matrix.include_worker }}
           OPTION_SET: ${{ matrix.option_set }}
         run: |
           git config --global user.name template-check
@@ -48,6 +60,7 @@ jobs:
             --data project_slug=sample-app \
             --data "include_postgres=${INCLUDE_POSTGRES}" \
             --data "include_accounts=${INCLUDE_ACCOUNTS}" \
+            --data "include_worker=${INCLUDE_WORKER}" \
             . "${RUNNER_TEMP}/${OPTION_SET}"
           git -C "${RUNNER_TEMP}/${OPTION_SET}" add --all
           git -C "${RUNNER_TEMP}/${OPTION_SET}" commit --quiet --message "chore: generate the app"
@@ -76,15 +89,23 @@ jobs:
           - option_set: no-postgres
             include_postgres: "false"
             include_accounts: "false"
+            include_worker: "false"
           - option_set: postgres
             include_postgres: "true"
             include_accounts: "false"
+            include_worker: "false"
           - option_set: postgres-accounts
             include_postgres: "true"
             include_accounts: "true"
+            include_worker: "false"
+          - option_set: postgres-accounts-worker
+            include_postgres: "true"
+            include_accounts: "true"
+            include_worker: "true"
     env:
       INCLUDE_POSTGRES: ${{ matrix.include_postgres }}
       INCLUDE_ACCOUNTS: ${{ matrix.include_accounts }}
+      INCLUDE_WORKER: ${{ matrix.include_worker }}
       OPTION_SET: ${{ matrix.option_set }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -120,10 +141,16 @@ jobs:
         include:
           - option_set: postgres
             include_accounts: "false"
+            include_worker: "false"
           - option_set: postgres-accounts
             include_accounts: "true"
+            include_worker: "false"
+          - option_set: postgres-accounts-worker
+            include_accounts: "true"
+            include_worker: "true"
     env:
       INCLUDE_ACCOUNTS: ${{ matrix.include_accounts }}
+      INCLUDE_WORKER: ${{ matrix.include_worker }}
       OPTION_SET: ${{ matrix.option_set }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -145,6 +172,7 @@ jobs:
             --data project_slug=sample-app \
             --data include_postgres=true \
             --data "include_accounts=${INCLUDE_ACCOUNTS}" \
+            --data "include_worker=${INCLUDE_WORKER}" \
             . "${RUNNER_TEMP}/boot-${OPTION_SET}"
       - name: Write the env files
         working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}
@@ -158,7 +186,9 @@ jobs:
           grep --quiet --extended-regexp '^POSTGRES_PASSWORD=[0-9a-f]{48}$' .env.database-owner
       - name: Build the image and start the stack
         working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}
-        run: docker compose up --detach --build --wait --wait-timeout 300
+        run: |
+          docker compose up --detach --build --wait --wait-timeout 300
+          docker compose ps --format '{{.Service}} {{.Status}}'
       - name: Read /health
         run: curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8000/health
       - name: Run the health flow
@@ -168,6 +198,10 @@ jobs:
         if: ${{ matrix.include_accounts == 'true' }}
         working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}/e2e
         run: uv run --locked python accounts_flow.py
+      - name: Run the worker flow
+        if: ${{ matrix.include_worker == 'true' }}
+        working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}/e2e
+        run: uv run --locked python worker_flow.py
       - name: Print container logs
         if: ${{ failure() }}
         working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}

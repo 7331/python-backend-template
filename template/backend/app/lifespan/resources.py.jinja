@@ -1,3 +1,6 @@
+{% if include_worker -%}
+from enum import StrEnum
+{% endif -%}
 from ipaddress import IPv4Network, IPv6Network
 from typing import TypedDict
 
@@ -24,3 +27,17 @@ class Resources(BaseModel):
 
 class ApiLifespanState(TypedDict):
     resources: Resources
+{%- if include_worker %}
+
+
+class ProcessRole(StrEnum):
+    WORKER = "worker"
+    COMMAND = "command"
+
+
+class ProcessResources(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    file_read_executor: BlockingExecutor
+    database: Database
+{%- endif %}
