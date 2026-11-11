@@ -5,7 +5,7 @@
 A [Copier](https://copier.readthedocs.io/en/stable/) template for a Python backend app. It gives you FastAPI on Python
 3.15, typed structlog events, a typer CLI, uv and Docker Compose. PostgreSQL through SQLAlchemy and Alembic is on
 unless you turn it off. There is no frontend. The OpenAPI document is the contract for any client. The generated
-`ARCHITECTURE.md` holds the rules the code follows.
+`BACKEND-API.md` shows the backend as a directory tree and diagrams, then the rules the code follows.
 
 ## Start an app
 
