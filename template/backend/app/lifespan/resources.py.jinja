@@ -8,10 +8,10 @@ from pydantic import BaseModel, ConfigDict
 
 {% if include_postgres -%}
 from app.infrastructure.postgres.client import Database
-{% endif -%}
-from app.infrastructure.rate_limit.limiter_store import InMemoryRateLimiter
-{%- if include_postgres %}
+from app.infrastructure.rate_limit.postgres_limiter_store import PostgresRateLimiter
 from app.shared.blocking_executor import BlockingExecutor
+{%- else -%}
+from app.infrastructure.rate_limit.limiter_store import InMemoryRateLimiter
 {%- endif %}
 
 
@@ -20,8 +20,10 @@ class Resources(BaseModel):
 {% if include_postgres %}
     file_read_executor: BlockingExecutor
     database: Database
-{%- endif %}
+    rate_limiter: PostgresRateLimiter
+{%- else %}
     rate_limiter: InMemoryRateLimiter
+{%- endif %}
     trusted_proxy_networks: tuple[IPv4Network | IPv6Network, ...]
 
 

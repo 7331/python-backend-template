@@ -63,7 +63,7 @@ Sources for the layout: [fastapi-best-practices](https://github.com/zhanymkanov/
 {%- if include_worker %}
         task_queue/              the job queue: the jobs table, enqueue_job, JobPayload, JobQueueWorker
 {%- endif %}
-        rate_limit/              the in-memory GCRA limiter
+        rate_limit/              {% if include_postgres %}the GCRA limiter: budgets in Postgres, in memory while it is down{% else %}the in-memory GCRA limiter{% endif %}
       shared/                    AppError, the error envelope, logging, request helpers{% if include_postgres %}, BlockingExecutor{% endif %}
   deploy/
     deploy.sh                    build and start production{% if include_postgres %}, then take a base backup{% endif %}
@@ -304,7 +304,7 @@ A write that must be serialised across processes takes `pg_advisory_xact_lock` o
 
 ### Pool budget
 
-Each process holds its own pool. The sum over every process stays under `max_connections` (100) minus `superuser_reserved_connections` (3). The API's pool is `API_DATABASE_POOL_SIZE` 10 plus `API_DATABASE_MAXIMUM_OVERFLOW` 5, at most 15 (`app/lifespan/composition.py`).{% if include_worker %} The worker and a CLI command each hold `PROCESS_DATABASE_POOL_SIZE` 2 with no overflow.{% endif %} Count every other process at its maximum: each worker's pool, the `migrate` run, a CLI command, and the backup scripts' sessions. Shrink a pool before raising `max_connections`.
+Each process holds its own pool. The sum over every process stays under `max_connections` (100) minus `superuser_reserved_connections` (3). The API's pool is `API_DATABASE_POOL_SIZE` 10 plus `API_DATABASE_MAXIMUM_OVERFLOW` 5, and the rate limiter holds its own `RATE_LIMIT_DATABASE_POOL_SIZE` 2, so a rate-limit check never waits behind a request handler or takes its connection: at most 17 per API replica (`app/lifespan/composition.py`).{% if include_worker %} The worker and a CLI command each hold `PROCESS_DATABASE_POOL_SIZE` 2 with no overflow.{% endif %} Count every other process at its maximum: each worker's pool, the `migrate` run, a CLI command, and the backup scripts' sessions. Shrink a pool before raising `max_connections`.
 
 ### Migrations
 
@@ -329,7 +329,7 @@ The `postgres` service passes every setting as a `-c` flag in `docker-compose.ym
 - `log_line_prefix` carries the query id, which matches `pg_stat_statements.queryid`. Revision `template_0001` creates that extension. Rank statements with `SELECT query, calls, total_exec_time FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 5`.
 - `archive_mode` is off locally and on in production, where `deploy/deploy.sh` and the backup scripts export `POSTGRES_ARCHIVE_MODE=on`. `archive_timeout=60` switches segments after a minute with activity, so a lost disk loses about a minute. Only the production image has `wal-g`.
 
-Docker sets no memory limit by default ([resource constraints](https://docs.docker.com/engine/containers/resource_constraints/)), so `deploy/docker-compose.production.yml` sets `mem_limit` on every service: 512 MB for `api`{% if include_worker %}, `worker`{% endif %} and `migrate`, and `POSTGRES_MEMORY_LIMIT` (default `1g`) for `postgres`. At the defaults `shared_buffers`, `/dev/shm`, three autovacuum workers and the API's 15 connections use about 816 MB of it. To grow, raise `POSTGRES_MEMORY_LIMIT` and `POSTGRES_SHARED_BUFFERS` together, and set `POSTGRES_EFFECTIVE_CACHE_SIZE` to the limit minus `shared_buffers`.
+Docker sets no memory limit by default ([resource constraints](https://docs.docker.com/engine/containers/resource_constraints/)), so `deploy/docker-compose.production.yml` sets `mem_limit` on every service: 512 MB for `api`{% if include_worker %}, `worker`{% endif %} and `migrate`, and `POSTGRES_MEMORY_LIMIT` (default `1g`) for `postgres`. At the defaults `shared_buffers`, `/dev/shm`, three autovacuum workers and the API's 17 connections use about 848 MB of it. To grow, raise `POSTGRES_MEMORY_LIMIT` and `POSTGRES_SHARED_BUFFERS` together, and set `POSTGRES_EFFECTIVE_CACHE_SIZE` to the limit minus `shared_buffers`.
 
 ### Backups
 
@@ -340,7 +340,7 @@ Production archives every WAL segment and takes a base backup each day with [WAL
 - `WALG_LIBSODIUM_KEY` is 32 random bytes in hex. Write it straight into the file with `printf 'WALG_LIBSODIUM_KEY=%s\n' "$(openssl rand -hex 32)" >> <file>` and keep a copy off the host and away from the bucket. Without it no backup can be read. Old backups need the old key, so it can't be replaced in place.
 - The bucket credentials get read, write and list. Nothing here deletes, so retention is a lifecycle rule on the bucket, longer than the restore window you promise. `WALG_PREVENT_WAL_OVERWRITE` never overwrites an archived segment ([WAL-G PostgreSQL](https://github.com/wal-g/wal-g/blob/v3.0.9/docs/PostgreSQL.md)), so a bucket with object lock works too.
 - `deploy/deploy.sh` runs `backup_postgres.sh` after every deploy, so every migration has a fresh base backup behind it.
-- `deploy/postgres/verify_postgres_backup_restore.sh` is the restore drill. It refuses when the newest base backup is older than `POSTGRES_RESTORE_DRILL_MAXIMUM_BASE_BACKUP_AGE_HOURS` (default 26). The throwaway container runs with no published port and `archive_mode=off`, so it never pushes into the production prefix. Row counts may differ from production's by `POSTGRES_RESTORE_DRILL_ROW_SLACK` (default 10). It prints the seconds to a usable database and the last replayed commit, then removes the container and its volume. Production gets only reads, one restore point and one WAL switch.
+- `deploy/postgres/verify_postgres_backup_restore.sh` is the restore drill. It refuses when the newest base backup is older than `POSTGRES_RESTORE_DRILL_MAXIMUM_BASE_BACKUP_AGE_HOURS` (default 26). The throwaway container runs with no published port and `archive_mode=off`, so it never pushes into the production prefix. Row counts may differ from production's by `POSTGRES_RESTORE_DRILL_ROW_SLACK` (default 10); `UNLOGGED` tables are not counted, because a restore empties them. It prints the seconds to a usable database and the last replayed commit, then removes the container and its volume. Production gets only reads, one restore point and one WAL switch.
 
 Restore after losing the host: put back the checkout, the deploy `.env`, the database owner env file and the backup env file with the key, then run
 
@@ -495,7 +495,13 @@ One entry point, `python -m app` (and `{{ project_slug }}` in `[project.scripts]
 - Lists that grow paginate by cursor. Offset is only for small, bounded lists.
 - POST routes a client may retry take idempotency keys.
 - Payloads are minimal. A field has one name across REST, events and stored payloads.
+{%- if include_postgres %}
+- Request budgets are a GCRA per client IP, kept in Postgres (`app/infrastructure/rate_limit/`, `app/rate_limit_middleware.py`), so every API replica and every restart draws on one budget. A check is one upsert on the `UNLOGGED` table `rate_limit_scopes` (revision `template_0003`), on an autocommit connection from the limiter's own pool, never in the request's transaction. A Postgres crash empties the table ([CREATE TABLE](https://www.postgresql.org/docs/18/sql-createtable.html#SQL-CREATETABLE-UNLOGGED)) and every client starts with a full budget once.
+  - A row is deleted once its budget has refilled: at most once a minute per API process, started by a check, so the table holds only the scopes of about the last two minutes.
+  - When Postgres does not answer a check within 1 s, the API logs `RateLimitStoreUnreachable` once and each process limits from its own memory, trying Postgres again every 5 s. The limits hold per process meanwhile, so N replicas admit up to N budgets.
+{%- else %}
 - Request budgets are an in-memory GCRA in the API process (`app/infrastructure/rate_limit/`, `app/rate_limit_middleware.py`), per client IP. That allows one API replica only, because a second replica would double every budget.
+{%- endif %}
 - The client IP comes from `X-Real-IP` only when the peer is inside one of `{{ environment_prefix }}_TRUSTED_PROXY_ADDRESSES`, a comma-separated list of addresses and CIDR networks. For a proxy on a docker network use the network's subnet. When `X-Real-IP` arrives from a private peer outside the list, the API logs `ForwardedClientAddressIgnored` once per process with the peer's address: every client behind that proxy shares one request budget until the address is added.
 
 ## Python and async
@@ -617,7 +623,7 @@ When work is split into steps, every step passes the gates. A step that changes 
 
 `backend/Dockerfile` is multi-stage and follows [uv's Docker guide](https://docs.astral.sh/uv/guides/integration/docker/): dependencies install before the source is copied, and the virtualenv is built in a builder stage and copied whole, so a Python bump changes only the `FROM` lines. Base images are pinned by digest, and Dependabot's monthly `base-images` pull request moves them. The runtime stage upgrades its OS packages behind `APT_EPOCH` and uninstalls pip. `.github/workflows/image-scan.yml` builds the image every Monday and fails on a fixable HIGH or CRITICAL vulnerability; move `APT_EPOCH` to today's date to pick up an OS fix. The image runs as a non-root user, and compose runs it read-only with a small `/tmp` tmpfs and every capability dropped. One image serves every process (`serve-api`{% if include_postgres %}, `alembic upgrade heads`{% endif %}, a worker). `Dockerfile.dockerignore` keeps everything the service does not run out of the build context.
 
-The app runs with Docker Compose on one host, behind a reverse proxy (`deploy/Caddyfile`). One image moves between environments, only environment variables differ, and every environment has its own {% if include_postgres %}database and {% endif %}credentials. There is no rollback. A bad release is fixed forward.
+The app runs with Docker Compose on one host, behind a reverse proxy (`deploy/Caddyfile`). One image moves between environments, only environment variables differ, and every environment has its own {% if include_postgres %}database and {% endif %}credentials. There is no rollback. A bad release is fixed forward.{% if include_postgres %} The template runs one `api` container. A second replica keeps every request budget, because the budgets are in Postgres, but the rest is yours to set up: `docker-compose.yml` publishes one local port, and Caddy has to be told to spread requests over the replicas.{% endif %}
 
 `deploy/Caddyfile` sets `lb_try_duration 30s` and `lb_try_interval 250ms`, so during a deploy Caddy holds each request and redials until the new `api` container listens, instead of answering 502 ([reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#lb_try_duration)). Keep uvicorn's `timeout_graceful_shutdown` (20 s) below `stop_grace_period` (25 s) below `lb_try_duration` (30 s). When the API is down, a request waits 30 s for its 502.
 {%- if include_postgres %}

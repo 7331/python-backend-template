@@ -34,8 +34,9 @@ A backend that one team runs on one host, with a web app, a mobile app, a CLI or
 - **Worker:** work that should not hold a request open: sending email or push notifications, processing an upload,
   syncing from a third-party API, retrying a delivery that failed.
 
-It is not for server-rendered pages, more than one API replica, or a cluster: the rate limiter lives in process
-memory and the deploy is Docker Compose on a single host.
+It is not for server-rendered pages or a cluster: the deploy is Docker Compose on a single host. With Postgres the
+request budgets live in the database, so a second API replica shares them. Without Postgres they live in process
+memory, which means one replica.
 
 ## Questions
 
