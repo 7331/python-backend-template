@@ -21,7 +21,7 @@ def describe_status_error_response(status_error_classes: tuple[type[AppError], .
 def describe_error_responses(error_classes: tuple[type[AppError], ...]) -> dict[int | str, dict[str, JsonValue]]:
     return {
         status_code: describe_status_error_response(
-            tuple(error_class for error_class in error_classes if error_class.status == status_code)
+            tuple(error_class for error_class in error_classes if error_class.status_code == status_code)
         )
-        for status_code in sorted({error_class.status for error_class in error_classes})
+        for status_code in sorted({error_class.status_code for error_class in error_classes})
     }

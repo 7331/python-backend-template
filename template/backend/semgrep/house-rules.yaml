@@ -2,7 +2,7 @@ rules:
   - id: typed-log-emission
     languages: [python]
     severity: ERROR
-    message: Emit a LogEvent through app.shared.logging (log.emit, log.exception).
+    message: Emit a LogEvent through app.shared.logging (log.emit, log.emit_with_traceback, log.exception).
     paths:
       exclude:
         - "**/app/shared/logging.py"

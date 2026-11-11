@@ -28,7 +28,7 @@ class RequestLogMiddleware:
                     event=RequestHandled(
                         method=request.method,
                         route=find_route_template(request),
-                        status=message["status"],
+                        status_code=message["status"],
                         duration_milliseconds=round((time.perf_counter() - started) * 1000, 1),
                     ),
                 )

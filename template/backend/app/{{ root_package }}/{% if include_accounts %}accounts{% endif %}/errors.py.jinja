@@ -5,17 +5,17 @@ from app.shared.errors import AppError, ConflictError, ForbiddenError, NotFoundE
 
 class PasskeyResponseInvalidError(AppError):
     code = "passkey_response_invalid"
-    status = 400
+    status_code = 400
 
 
 class PasskeyChallengeExpiredError(AppError):
     code = "passkey_challenge_expired"
-    status = 400
+    status_code = 400
 
 
 class PasskeyCredentialIdTooLongError(AppError):
     code = "passkey_credential_id_too_long"
-    status = 400
+    status_code = 400
     parameters_model = CredentialIdLengthParameters
 
     def __init__(self, parameters: CredentialIdLengthParameters) -> None:

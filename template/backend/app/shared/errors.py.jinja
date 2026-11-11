@@ -5,7 +5,7 @@ from app.shared.schemas import ErrorDetail, ErrorParameters
 
 class AppError(Exception):
     code: str = "internal_error"
-    status: int = 500
+    status_code: int = 500
     retry_after_seconds: int | None = None
     response_headers: ClassVar[tuple[tuple[str, str], ...]] = ()
     parameters_model: ClassVar[type[ErrorParameters] | None] = None
@@ -28,36 +28,36 @@ class AppError(Exception):
 
 class InvalidInputError(AppError):
     code = "validation_error"
-    status = 400
+    status_code = 400
 
 
 class MalformedBodyError(AppError):
     code = "malformed_body"
-    status = 400
+    status_code = 400
 
 
 class RateLimitedError(AppError):
     code = "rate_limited"
-    status = 429
+    status_code = 429
 {%- if include_accounts %}
 
 
 class NotFoundError(AppError):
     code = "not_found"
-    status = 404
+    status_code = 404
 
 
 class UnauthorizedError(AppError):
     code = "unauthorized"
-    status = 401
+    status_code = 401
 
 
 class ConflictError(AppError):
     code = "conflict"
-    status = 409
+    status_code = 409
 
 
 class ForbiddenError(AppError):
     code = "forbidden"
-    status = 403
+    status_code = 403
 {%- endif %}

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 import structlog
 from structlog.typing import EventDict, Processor, WrappedLogger
 
-__all__ = ["LogEvent", "configure_logging", "emit", "exception", "get_logger"]
+__all__ = ["LogEvent", "configure_logging", "emit", "emit_with_traceback", "exception", "get_logger"]
 
 
 class LogEvent(BaseModel):
@@ -19,12 +19,16 @@ class LogEvent(BaseModel):
     operation: ClassVar[str]
 
 
-def emit(logger: structlog.stdlib.BoundLogger, *, event: LogEvent, exception: bool | BaseException = False) -> None:
+def emit(logger: structlog.stdlib.BoundLogger, *, event: LogEvent) -> None:
+    logger.log(event.level, event.message, operation=event.operation, **event.model_dump())
+
+
+def emit_with_traceback(logger: structlog.stdlib.BoundLogger, *, event: LogEvent, exception: BaseException) -> None:
     logger.log(event.level, event.message, operation=event.operation, **event.model_dump(), exc_info=exception)
 
 
 def exception(logger: structlog.stdlib.BoundLogger, *, event: LogEvent) -> None:
-    emit(logger, event=event, exception=True)
+    logger.log(event.level, event.message, operation=event.operation, **event.model_dump(), exc_info=True)
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:

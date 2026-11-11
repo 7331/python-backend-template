@@ -52,9 +52,9 @@ def build_app_error_response(error: AppError) -> JSONResponse:
         message=error.message,
         details=error.details,
         parameters=error.parameters,
-        request_id=find_request_id_for_server_error(error.status),
+        request_id=find_request_id_for_server_error(error.status_code),
     )
-    return build_error_json_response(error.status, error_body=error_body, headers=headers)
+    return build_error_json_response(error.status_code, error_body=error_body, headers=headers)
 
 
 def name_http_error_code(status_code: int) -> str:
