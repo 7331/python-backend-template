@@ -16,11 +16,14 @@ cp .env.example .env
 cp .env.database-owner.example .env.database-owner
 docker compose up -d --build --wait
 curl http://127.0.0.1:8000/health
-uvx prek run --all-files
+uvx prek run --stage pre-push --all-files
 ```
 
 `--trust` lets Copier run the setup tasks: `git init`, `uv lock` in `backend/` and `e2e/`, an import sort and format
 pass, a first `backend/openapi.json` and `uvx prek install`. Each app makes and commits its own `uv.lock`.
+
+The app's own `README.md` has the first-push steps: the first commit, the labels the issue forms use, squash-only
+merges with auto-merge, Dependabot alerts, and the `main` ruleset from `.github/rulesets/main.json`.
 
 Fill in the env files before the first `up`. The copy message lists the keys that need a value. Without Postgres,
 skip the second `cp`: there is no `.env.database-owner`. The API reads `.env` and gets only its own database role's
@@ -54,7 +57,12 @@ version against the newest release tag and applies that diff. Conflicts land as 
 - `copier.yml` holds the questions, the setup tasks and the copy message.
 - `template/` is what Copier renders. Only `.jinja` files are rendered. A file or folder whose name renders empty is
   skipped, which is how the options drop their files.
-- `.github/workflows/template-check.yml` generates the app three ways (no Postgres, Postgres, Postgres with accounts)
-  and runs `uvx prek run --all-files` in each. A second job audits the workflows with
-  [zizmor](https://docs.zizmor.sh/).
+- `.github/workflows/template-check.yml` generates the app three ways (no Postgres, Postgres, Postgres with accounts),
+  runs `uvx prek run --stage pre-push --all-files` in each and audits the workflows each app gets with
+  [zizmor](https://docs.zizmor.sh/). A second job audits this repository's own workflows. `Check` passes only when
+  both did.
+- `.github/workflows/pr-title.yml` and `.github/rulesets/main.json` are the same files an app gets: a pull request
+  title is `type(scope): sentence`, and `main` takes squash merges of pull requests that pass `Check` and
+  `Conventional title`. `template-check` fails when the two copies differ.
+- `README.md` and `AGENTS.md` are in `_skip_if_exists`, so an update never overwrites an app's edits to them.
 - Every release gets a tag, because `copier update` only moves between tags.

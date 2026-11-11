@@ -1,0 +1,44 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: uv
+    directories:
+      - /backend
+      - /e2e
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      python:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directories:
+      - /backend
+{%- if include_postgres %}
+      - /deploy/postgres
+{%- endif %}
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      base-images:
+        patterns: ["*"]

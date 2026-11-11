@@ -1,0 +1,65 @@
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  conventional-title:
+    name: Conventional title
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    permissions:
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Check the title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|refactor|style|chore|docs|test|perf|ci|build|revert)(\([a-z0-9._/-]+\))?!?: .+'
+          if printf '%s' "$TITLE" | grep -qE "$pattern"; then
+            echo "ok: $TITLE"
+          else
+            echo "::error::The PR title must be 'type(scope): sentence' (Conventional Commits): one type from the list, at most one lowercase scope, '!' before the colon for a breaking change. It becomes the squash commit's subject."
+            echo "  types: feat fix refactor style chore docs test perf ci build revert"
+            echo "  e.g.:  fix(accounts): keep the session when a sign-in is retried"
+            echo "  got:   $TITLE"
+            exit 1
+          fi
+
+      - name: Check the issues the body names
+        if: >-
+          !cancelled()
+          && github.event.pull_request.user.login != 'dependabot[bot]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          issue_line='^[[:space:]]*([-*][[:space:]]+)?(close[sd]?|fix(e[sd])?|resolve[sd]?|part of):? #[0-9]+'
+          issue_numbers="$(printf '%s\n' "$BODY" | tr -d '\r' | { grep -oiE "$issue_line" || true; } | grep -oE '[0-9]+$' | sort -un || true)"
+          if [ -z "$issue_numbers" ]; then
+            echo "ok: the body names no issue"
+            exit 0
+          fi
+          failed=0
+          for issue_number in $issue_numbers; do
+            if ! pull_request_url="$(gh api "repos/${REPO}/issues/${issue_number}" --jq '.pull_request.url // ""' 2>&1)"; then
+              echo "::error::#${issue_number} is not an issue of ${REPO} (${pull_request_url##*gh: }). Name an existing issue in its 'Fixes #N' or 'Part of #N' line."
+              failed=1
+            elif [ -n "$pull_request_url" ]; then
+              echo "::error::#${issue_number} is a pull request, not an issue. Name the issue it works on in its 'Fixes #N' or 'Part of #N' line."
+              failed=1
+            else
+              echo "ok: #${issue_number} is an issue"
+            fi
+          done
+          exit "$failed"

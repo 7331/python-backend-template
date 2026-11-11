@@ -1,0 +1,22 @@
+# {{ project_slug }}
+
+Read `BACKEND-API.md` before writing or reviewing code here. It is the shape the code follows. `README.md` says how
+to run the app and its checks.
+
+## Pull requests
+
+- Every change reaches `main` through a pull request. The `main` ruleset refuses a direct push.
+- The title is `type(scope): sentence`, with a type from `feat fix refactor style chore docs test perf ci build
+  revert` and at most one lowercase scope. It becomes the squash commit's subject. The `Conventional title` check
+  and the commit-msg hook read the one pattern in `.github/workflows/pr-title.yml`.
+- Fill in the pull request template. Each issue gets its own line, `Fixes #N` or `Part of #N`, and the check
+  refuses a number that is not an issue of this repository.
+- Arm auto-merge when you open the pull request: `gh pr merge --auto --squash`. GitHub squashes it once `Check` and
+  `Conventional title` pass on a branch that is up to date with `main`. Never merge by hand, and never push past a
+  red check.
+- Leave auto-merge off for a change to a migration, authentication, money or the deploy files. The owner reads
+  those before they merge.
+- Run `uvx prek run --stage pre-push --all-files` before you push. The e2e flows run by hand when the change needs
+  one.
+
+## Deliberate differences from the template

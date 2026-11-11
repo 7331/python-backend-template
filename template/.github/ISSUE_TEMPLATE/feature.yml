@@ -1,0 +1,33 @@
+name: Feature
+description: New behaviour, or a refactor, cleanup, tooling, docs or performance change.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        File only work that outlives the session, a deferred bug or a decision that should stay findable. A fix done now needs only its pull request. Keep this description the current truth and put updates in comments. A pull request into `main` with a `Fixes #N` line closes it on merge. Done means it works on the running system. Close as not planned with a one-line reason.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What's missing, and why now.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The change, and the option that lost.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance
+      description: Checkable on the running system.
+      value: "- "
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Linked issues, pull requests and decisions.
