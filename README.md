@@ -18,8 +18,24 @@ curl http://127.0.0.1:8000/health
 ```
 
 `--trust` lets Copier run the setup tasks (`git init`, `uv lock`, a first `openapi.json`, the git hooks). The copy
-message lists the env keys that need a value. From there the app's own `README.md` covers checks, the first push and
-deploy, and its `BACKEND-API.md` shows the backend as a tree and diagrams, then the rules the code follows.
+message lists the env keys that need a value. From there the app's own `README.md` covers checks and deploy, and its
+`BACKEND-API.md` shows the backend as a tree and diagrams, then the rules the code follows.
+
+## What it's for
+
+A backend that one team runs on one host, with a web app, a mobile app, a CLI or another service as its client.
+
+- **No Postgres:** a thin API in front of someone else's, such as a mobile app's backend that wraps, caches and
+  rate-limits a third-party API and keeps its keys off the device.
+- **Postgres:** the API behind a web or mobile app's own data, an internal tool, or a webhook receiver that
+  verifies, stores and answers.
+- **Accounts:** a consumer app where people sign up and sign in with a passkey and stay signed in with a cookie
+  session.
+- **Worker:** work that should not hold a request open: sending email or push notifications, processing an upload,
+  syncing from a third-party API, retrying a delivery that failed.
+
+It is not for server-rendered pages, more than one API replica, or a cluster: the rate limiter lives in process
+memory and the deploy is Docker Compose on a single host.
 
 ## Questions
 

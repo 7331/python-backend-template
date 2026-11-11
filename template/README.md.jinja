@@ -26,18 +26,6 @@ uvx prek run --stage pre-push --all-files
 CI runs the same command, on `ubuntu-latest` unless the repository variable `CI_RUNNER` names other runner labels as
 JSON. The e2e flows in `e2e/` run by hand when a change needs one.
 
-## First push
-
-```sh
-git add --all
-git commit --message "chore: start from python-backend-template"
-gh repo create {{ project_slug }} --private --source . --push
-.github/first-push.sh
-```
-
-The script creates the issue labels, allows only squash merges with auto-merge, turns on Dependabot alerts and
-applies the `main` ruleset, after which every change is a pull request.
-
 ## Deploy
 
 On the host, with the env files outside the checkout and mode 600:

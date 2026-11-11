@@ -19,4 +19,10 @@ to run the app and its checks.
 - Run `uvx prek run --stage pre-push --all-files` before you push. The e2e flows run by hand when the change needs
   one.
 
+## A new repository
+
+Once, after the first push: create the labels the issue forms name, allow only squash merges with auto-merge and
+branch deletion, turn on Dependabot alerts and security updates, then apply `.github/rulesets/main.json` as a
+ruleset. The ruleset goes last because it refuses a direct push to `main`.
+
 ## Deliberate differences from the template
