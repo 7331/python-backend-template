@@ -98,6 +98,7 @@ fi
 echo "Updating the ${app_state} app from ${latest_release_tag} to the template's HEAD"
 uvx copier update --trust --defaults --vcs-ref HEAD --conflict inline
 fail_on_update_conflicts
+uv run --quiet --directory backend python tools/dump_openapi.py openapi.json
 if [[ "${app_state}" == changed ]]; then
   require_changed_app_edit
 fi

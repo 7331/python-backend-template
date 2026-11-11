@@ -1,0 +1,17 @@
+services:
+  api:
+    read_only: false
+    user: "0:0"
+    develop:
+      watch:
+        - action: sync+restart
+          path: backend/app
+          target: /app/backend/app
+          ignore:
+            - "**/__pycache__/"
+        - action: rebuild
+          path: backend/uv.lock
+        - action: rebuild
+          path: backend/pyproject.toml
+        - action: rebuild
+          path: backend/Dockerfile

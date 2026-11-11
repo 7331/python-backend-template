@@ -133,12 +133,16 @@ class AccountService:
     async def consume_signed_challenge(
         self, credential_json: dict[str, JsonValue], *, purpose: ChallengePurpose
     ) -> ConsumedPasskeyChallenge:
-        challenge = read_signed_challenge(credential_json)
-        challenge_row = await self.repository.consume_unexpired_challenge(
-            hash_challenge(challenge), purpose=purpose, now=datetime.now(UTC)
-        )
-        if challenge_row is None:
-            raise PasskeyChallengeExpiredError("the passkey prompt expired or was already used; try again")
+        try:
+            challenge = read_signed_challenge(credential_json)
+            challenge_row = await self.repository.consume_unexpired_challenge(
+                hash_challenge(challenge), purpose=purpose, now=datetime.now(UTC)
+            )
+            if challenge_row is None:
+                raise PasskeyChallengeExpiredError("the passkey prompt expired or was already used; try again")
+        except AppError as refusal:
+            log.emit(logger, event=log_events.PasskeyCeremonyRefused(ceremony=purpose.value, reason=refusal.code))
+            raise
         return ConsumedPasskeyChallenge(
             challenge=challenge,
             sign_up_username=challenge_row.sign_up_username,
@@ -185,9 +189,10 @@ class AccountService:
         )
         return options_to_json_dict(options)
 
-    async def sign_up(self, credential_json: dict[str, JsonValue], *, label: str) -> StartedAccountSession:
+    async def sign_up(
+        self, credential_json: dict[str, JsonValue], *, consumed_challenge: ConsumedPasskeyChallenge, label: str
+    ) -> StartedAccountSession:
         try:
-            consumed_challenge = await self.consume_signed_challenge(credential_json, purpose=ChallengePurpose.SIGN_UP)
             if consumed_challenge.sign_up_username is None or consumed_challenge.sign_up_user_handle is None:
                 raise PasskeyChallengeExpiredError("the passkey prompt was not for a sign-up; try again")
             verified_registration = self.verify_new_passkey(credential_json, challenge=consumed_challenge.challenge)
@@ -233,9 +238,10 @@ class AccountService:
         )
         return options_to_json_dict(options)
 
-    async def sign_in_with_passkey(self, credential_json: dict[str, JsonValue]) -> StartedAccountSession:
+    async def sign_in_with_passkey(
+        self, credential_json: dict[str, JsonValue], *, consumed_challenge: ConsumedPasskeyChallenge
+    ) -> StartedAccountSession:
         try:
-            consumed_challenge = await self.consume_signed_challenge(credential_json, purpose=ChallengePurpose.SIGN_IN)
             try:
                 credential = parse_authentication_credential_json(credential_json)
             except WebAuthnException as parse_error:

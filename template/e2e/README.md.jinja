@@ -16,6 +16,9 @@ End-to-end flows against a real compose stack, run by hand when a change needs t
   and its volumes, also after a failure. The exit code is 0 only when every assertion passed.
 - A flow is due after a change to its journey, a migration, the compose files or the deploy files. It is never a CI or
   hook gate. A flow that only pinned old details gets deleted or rewritten.
+- In work split into steps, a step that changes behaviour runs the flows it touches, and the last step runs them once
+  more from the base of the work. A failing flow is run on the base first: red there too means the step did not break
+  it.
 
 ```sh
 cd e2e

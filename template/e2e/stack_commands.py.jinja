@@ -87,6 +87,8 @@ def run_compose(
             compose_stack.project_name,
             "--env-file",
             str(compose_stack.environment_file),
+            "--file",
+            "docker-compose.yml",
             *compose_arguments,
         ],
         cwd=REPOSITORY_DIRECTORY,

@@ -185,7 +185,7 @@ layers = [
     "cli",
     "main",
     "openapi_contract",
-    "rate_limit_middleware | request_log_middleware | unhandled_error_middleware",
+    "allowed_host_middleware | rate_limit_middleware | request_body_limit_middleware | request_log_middleware | unhandled_error_middleware",
     "lifespan",
     "log_events",
 {%- if include_accounts %}
