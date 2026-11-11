@@ -2,6 +2,9 @@ _.DEBUG
 _.handlers
 {%- if include_accounts %}
 _.REGISTERED_MODEL_MODULES
+{%- elif include_object_storage %}
+_.REGISTERED_MODEL_MODULES
+_.build_postgres_enum
 {%- else %}
 _.API_PREFIX
 _.ApiRequest
@@ -17,4 +20,9 @@ _.build_postgres_enum
 {%- endif %}
 {%- if include_worker %}
 _.require_lease_longer_than_job_timeout
+{%- endif %}
+{%- if include_object_storage %}
+_.PNG
+_.JPEG
+_.PDF
 {%- endif %}

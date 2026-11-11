@@ -13,6 +13,9 @@ from contextlib import asynccontextmanager
 
 from app.configuration import read_application_settings
 {%- endif %}
+{%- if include_object_storage %}
+from app.infrastructure.object_storage.client import open_object_storage_client
+{%- endif %}
 {%- if include_postgres %}
 from app.infrastructure.postgres.client import Database
 {%- endif %}
@@ -86,6 +89,9 @@ async def open_api_resources() -> AsyncGenerator[Resources]:
                 connection_settings=connection_settings,
                 file_read_executor=file_read_executor,
             ),
+{%- if include_object_storage %}
+            object_storage=open_object_storage_client(exit_stack),
+{%- endif %}
             rate_limiter=open_rate_limiter(
                 exit_stack, application_settings=application_settings, connection_settings=connection_settings
             ),

@@ -30,6 +30,9 @@ uv run python accounts_flow.py
 {%- if include_worker %}
 uv run python worker_flow.py
 {%- endif %}
+{%- if include_object_storage %}
+uv run python object_storage_flow.py
+{%- endif %}
 ```
 
 Keep run output outside the repository.

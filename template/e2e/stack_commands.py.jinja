@@ -9,7 +9,7 @@ REPOSITORY_DIRECTORY = Path(__file__).resolve().parent.parent
 E2E_COMPOSE_PROJECT_NAME_PREFIX = "{{ project_slug }}-e2e"
 STACK_START_TIMEOUT_SECONDS = 600
 STACK_STOP_TIMEOUT_SECONDS = 120
-{%- if include_accounts or include_worker %}
+{%- if include_accounts or include_worker or include_object_storage %}
 DATABASE_READ_TIMEOUT_SECONDS = 30
 {%- endif %}
 
@@ -51,6 +51,9 @@ def build_public_base_url(api_publish_port: int) -> str:
 {% endif -%}
 def prepare_compose_stack(environment_directory: Path, *, api_publish_port: int) -> ComposeStack:
     environment_file = environment_directory / "e2e.env"
+{%- if include_object_storage %}
+    object_storage_publish_port = find_free_local_port()
+{%- endif %}
     environment_lines = [
         f"{{ environment_prefix }}_ENVIRONMENT_FILE={environment_file}",
 {%- if include_postgres %}
@@ -61,6 +64,12 @@ def prepare_compose_stack(environment_directory: Path, *, api_publish_port: int)
         f"{{ environment_prefix }}_ACCOUNTS_PUBLIC_BASE_URL={build_public_base_url(api_publish_port)}",
 {%- endif %}
         f"API_PUBLISH_PORT={api_publish_port}",
+{%- if include_object_storage %}
+        f"{{ environment_prefix }}_OBJECT_STORAGE_ACCESS_KEY_ID={secrets.token_hex(12)}",
+        f"{{ environment_prefix }}_OBJECT_STORAGE_SECRET_ACCESS_KEY={secrets.token_urlsafe(32)}",
+        f"{{ environment_prefix }}_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL=http://127.0.0.1:{object_storage_publish_port}",
+        f"OBJECT_STORAGE_PUBLISH_PORT={object_storage_publish_port}",
+{%- endif %}
     ]
     environment_file.write_text("\n".join(environment_lines) + "\n")
     environment_file.chmod(0o600)
@@ -119,7 +128,7 @@ def destroy_stack(compose_stack: ComposeStack) -> None:
         compose_stack=compose_stack,
         timeout_seconds=STACK_STOP_TIMEOUT_SECONDS,
     )
-{%- if include_accounts or include_worker %}
+{%- if include_accounts or include_worker or include_object_storage %}
 
 
 def read_database_value(sql_query: str, *, compose_stack: ComposeStack) -> str:

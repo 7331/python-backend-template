@@ -1,0 +1,36 @@
+from datetime import datetime
+from typing import Annotated
+
+from pydantic import Field
+
+from app.{{ root_package }}.files.enums import FileContentType
+from app.shared.schemas import ApiRequest, ApiResponse
+
+MAXIMUM_FILE_SIZE_BYTES = 10 * 1024 * 1024
+FILE_ID_PATTERN = r"^[A-Za-z0-9_-]{32}$"
+FileId = Annotated[str, Field(pattern=FILE_ID_PATTERN)]
+
+
+class FileUploadRequest(ApiRequest):
+    content_type: FileContentType
+    size_bytes: int = Field(gt=0, le=MAXIMUM_FILE_SIZE_BYTES)
+
+
+class FileUploadResponse(ApiResponse):
+    upload_id: str
+    upload_url: str
+    upload_headers: dict[str, str]
+    expires_at: datetime
+
+
+class StoredFileRequest(ApiRequest):
+    upload_id: FileId
+
+
+class FileResponse(ApiResponse):
+    file_id: str
+    content_type: str
+    size_bytes: int
+    created_at: datetime
+    download_url: str
+    download_url_expires_at: datetime

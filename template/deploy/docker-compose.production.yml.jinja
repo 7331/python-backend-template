@@ -36,6 +36,12 @@ services:
       - backend_data
       - backend_egress
 {%- endif %}
+{%- if include_object_storage %}
+
+  object-storage:
+    profiles:
+      - local-object-storage
+{%- endif %}
 
 networks:
   reverse_proxy:

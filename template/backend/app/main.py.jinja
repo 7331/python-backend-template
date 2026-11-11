@@ -4,6 +4,9 @@ from fastapi import FastAPI
 from app.{{ root_package }}.accounts.configuration import read_relying_party
 from app.{{ root_package }}.accounts.router import accounts_router
 {% endif -%}
+{% if include_object_storage -%}
+from app.{{ root_package }}.files.router import files_router
+{% endif -%}
 from app.allowed_host_middleware import AllowedHostMiddleware
 from app.configuration import read_application_settings
 from app.lifespan.api_lifespan import run_api_lifespan
@@ -43,6 +46,9 @@ def create_app() -> FastAPI:
         openapi_url=None,
         generate_unique_id_function=name_operation_after_handler,
     )
+{%- if include_object_storage %}
+    application.include_router(files_router)
+{%- endif %}
 {%- if include_postgres %}
     application.add_api_route("/ready", read_readiness, methods=["GET", "HEAD"], include_in_schema=False)
 {%- else %}

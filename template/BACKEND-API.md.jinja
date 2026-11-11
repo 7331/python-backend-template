@@ -16,7 +16,7 @@ Sources for the layout: [fastapi-best-practices](https://github.com/zhanymkanov/
   .pre-commit-config.yaml        every gate, run by prek
   .copier-answers.yml            read by `copier update`
   .github/                       CI, the title check, the image scan, Dependabot, issue forms, the `main` ruleset
-  docker-compose.yml             {% if include_worker %}postgres, migrate, api and worker{% elif include_postgres %}postgres, migrate and api{% else %}the api service{% endif %}
+  docker-compose.yml             {% if include_worker %}postgres, migrate, api and worker{% elif include_postgres %}postgres, migrate and api{% else %}the api service{% endif %}{% if include_object_storage %}, plus a local bucket server{% endif %}
   compose.watch.yml              local only: compose watch for api, named with `--file`
 {%- if include_postgres %}
   compose.postgres-loopback.yml  local only: Postgres on 127.0.0.1 for a backend run on the host
@@ -56,12 +56,18 @@ Sources for the layout: [fastapi-best-practices](https://github.com/zhanymkanov/
 {%- if include_worker %}
         queue_probe/             a sample job kind that proves the queue; delete it with the app's first real job
 {%- endif %}
+{%- if include_object_storage %}
+        files/                   a sample domain: presigned upload, stored file, presigned download, delete
+{%- endif %}
       infrastructure/
 {%- if include_postgres %}
         postgres/                Database, ORM Base, mixins, enum builder
 {%- endif %}
 {%- if include_worker %}
         task_queue/              the job queue: the jobs table, enqueue_job, JobPayload, JobQueueWorker
+{%- endif %}
+{%- if include_object_storage %}
+        object_storage/          the S3 client: presigned URLs, head, copy, delete
 {%- endif %}
         rate_limit/              {% if include_postgres %}the GCRA limiter: budgets in Postgres, in memory while it is down{% else %}the in-memory GCRA limiter{% endif %}
       shared/                    AppError, the error envelope, logging, request helpers{% if include_postgres %}, BlockingExecutor{% endif %}
@@ -97,17 +103,20 @@ flowchart TD
     middlewares --> lifespan["app.lifespan"]
     lifespan --> events["app.log_events"]
 {%- if include_accounts %}
-    events --> domains["app.{{ root_package }}.accounts{% if include_worker %}, then app.{{ root_package }}.queue_probe{% endif %}"]
+    events --> domains["app.{{ root_package }}.accounts{% if include_worker %}, then app.{{ root_package }}.queue_probe{% endif %}{% if include_object_storage %}, then app.{{ root_package }}.files{% endif %}"]
 {%- else %}
     events --> domains["app.{{ root_package }}"]
 {%- endif %}
     domains --> limiter["app.infrastructure.rate_limit"]
+{%- if include_object_storage %}
+    limiter --> object_storage["app.infrastructure.object_storage"]
+{%- endif %}
 {%- if include_worker %}
-    limiter --> task_queue["app.infrastructure.task_queue"]
+    {{ "object_storage" if include_object_storage else "limiter" }} --> task_queue["app.infrastructure.task_queue"]
     task_queue --> postgres["app.infrastructure.postgres"]
     postgres --> base["app.shared | app.configuration"]
 {%- elif include_postgres %}
-    limiter --> postgres["app.infrastructure.postgres"]
+    {{ "object_storage" if include_object_storage else "limiter" }} --> postgres["app.infrastructure.postgres"]
     postgres --> base["app.shared | app.configuration"]
 {%- else %}
     limiter --> base["app.shared | app.configuration"]
@@ -124,6 +133,9 @@ flowchart TD
 {%- endif %}
 {%- if include_worker %}
 - `forbidden`: `app.worker`, `app.worker_healthcheck`, `app.infrastructure.task_queue` and every `jobs.py` never import FastAPI, Starlette or a `dependencies` module, directly or through another module. A worker has no request.
+{%- endif %}
+{%- if include_object_storage %}
+- `forbidden` and `protected`: only `app.infrastructure.object_storage` imports botocore, its settings and its log events. A domain imports its `client`, `types` and `errors`.
 {%- endif %}
 - Each contract's `broken_contract_guidance` says how to fix a break. A new domain takes its own place in `layers`{% if include_accounts %} and adds its own `protected` contract{% endif %}.
 
@@ -180,6 +192,10 @@ flowchart LR
     api -- "backend_data (internal)" --> postgres[("postgres")]
     migrate -- "backend_data (internal)" --> postgres
     api -- "backend_egress" --> outside["external APIs"]
+{%- if include_object_storage %}
+    api -- "backend_egress" --> object_storage[("object-storage, local only; a real bucket in production")]
+    local_client["127.0.0.1:OBJECT_STORAGE_PUBLISH_PORT, local only"] --> object_storage
+{%- endif %}
     postgres -- "backend_egress, production only" --> bucket[("S3 bucket: WAL and base backups")]
 ```
 
@@ -209,7 +225,7 @@ The stack is one container, `api`, on `backend_egress`. Locally it publishes `12
 {% endif %}
 ## Data stores
 {% if include_postgres %}
-PostgreSQL is the only store and the source of truth. A domain owns its tables. Other domains read them through its service, never with their own SQL. A reference to another domain's row is an id, never an ORM relationship.
+PostgreSQL is the only store and the source of truth. A domain owns its tables. Other domains read them through its service, never with their own SQL. A reference to another domain's row is an id, never an ORM relationship.{% if include_object_storage %} File bytes live in an S3-compatible bucket; the `files` table is their index (see Object storage).{% endif %}
 {%- else %}
 The app keeps no state of its own. It has no database, and request budgets live in the API process's memory, so a restart clears them.
 {%- endif %}
@@ -368,6 +384,41 @@ journalctl --unit {{ project_slug }}-postgres-backup-schedule
 The unit expects the checkout at `/opt/{{ project_slug }}` and the env files at `/etc/{{ project_slug }}/deploy.env`, `database-owner.env` and `postgres-backup.env`. Override other paths with `systemctl edit`.
 
 `deploy/deploy.sh` warns, still deploys, and then exits 1 when the unit is not active, or when before the deploy the newest base backup was older than `POSTGRES_RESTORE_DRILL_MAXIMUM_BASE_BACKUP_AGE_HOURS`, missing or unreadable. Both scripts take a lock, so a run by hand and the loop never overlap. The loop's first pass after a start runs at once. While it is down, each deploy still takes a base backup.
+{%- endif %}
+{%- if include_object_storage %}
+
+## Object storage
+
+Files live in an S3-compatible bucket and their bytes never pass through the API, so its 64 KB body cap stays. `app/infrastructure/object_storage/` holds the settings and `ObjectStorageClient`, opened once in the lifespan and held on `Resources`. `app/{{ root_package }}/files/` is a sample domain on top of it, with a `files` table on its own Alembic line (`object_storage_0001`).
+
+```mermaid
+sequenceDiagram
+    participant client as Client
+    participant api as API
+    participant bucket as Bucket
+    client->>api: POST /api/v1/file-uploads {content_type, size_bytes}
+    api-->>client: upload_id, upload_url signed for pending/<id>, that type and that size
+    client->>bucket: PUT upload_url with the bytes
+    bucket-->>client: 200, or 403 when the size, type, key or time differ
+    client->>api: POST /api/v1/files {upload_id}
+    api->>bucket: HEAD pending/<id>
+    api->>api: check the size and type the bucket reports, insert the files row
+    api->>bucket: copy to files/<id> as an attachment, only if the ETag still matches
+    api-->>client: file_id, download_url (a signed GET)
+    client->>bucket: GET download_url
+```
+
+- The upload URL signs `Content-Length` and `Content-Type`, so the bucket refuses another size or type with 403. The API then reads both from the bucket (`HEAD`) and checks them again; it never trusts what the client declared. The allowed types are `FileContentType` and the limit is `MAXIMUM_FILE_SIZE_BYTES` (10 MiB), both in the `files` package. One PUT carries at most 5 GiB ([uploading objects](https://docs.aws.amazon.com/AmazonS3/latest/userguide/upload-objects.html)); multipart upload is not built.
+- A presigned URL works again and again until it expires ([presigned URLs](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html)). So uploads land under `pending/`, and the copy under `files/` is one no client ever held a write URL for.
+- The bucket is private. A download is a presigned GET that lives `{{ environment_prefix }}_OBJECT_STORAGE_DOWNLOAD_URL_LIFETIME_SECONDS` (60); whoever holds it can read the file until then. The object is stored with `Content-Disposition: attachment`. The content type is still the uploader's claim: decode the bytes before treating a file as an image.
+- Delete removes the row, then `files/<id>` and `pending/<id>`, then commits. When the bucket fails the request answers 503, the row comes back and the client repeats the delete. So a failure leaves a row without an object, never an object nobody can find.
+- When the commit fails after the copy, the object exists without a row until the client stores the same `upload_id` again. Nothing sweeps the bucket for such objects.
+- Uploads that are never stored stay under `pending/`. Give the bucket a lifecycle rule that expires that prefix after a day ([lifecycle rules](https://docs.aws.amazon.com/AmazonS3/latest/userguide/intro-lifecycle-rules.html)); the app removes none of them.
+- `{{ environment_prefix }}_OBJECT_STORAGE_ENDPOINT_URL` is where the API calls the bucket, and `{{ environment_prefix }}_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL` is the host signed into the URLs a client gets. Locally they differ (the compose network and `127.0.0.1`); against a hosted bucket they are the same.
+- The client makes no call at startup and `/ready` does not check the bucket, so a bucket outage fails only the file routes, with 503 `object_storage_unavailable` and an `ObjectStorageCallFailed` log line.
+- `docker-compose.yml` runs [versitygw](https://github.com/versity/versitygw) as `object-storage` for local work only: read-only, no capabilities, the bucket made at start, published on `127.0.0.1:OBJECT_STORAGE_PUBLISH_PORT`. `deploy/docker-compose.production.yml` puts it behind a profile, so production starts no bucket server. There the settings name a real bucket and a key that may only get, put and delete objects in it. A browser client also needs a CORS rule on the bucket.
+- The Postgres backups hold the `files` rows, not the objects. Turn on versioning or replication for the bucket. A database restored to an earlier time can name objects deleted since.
+- The sample has no owner and no sign-in: anyone may upload, and a file id is the only key to a file. Put the app's own access check on the router before it is public. To drop the sample, delete the package, its router in `app/main.py`, its import in `migrations/env.py` and its lines in `pyproject.toml`, and drop the table in an `app` revision.
 {%- endif %}
 
 ## Connection packages and external HTTP APIs

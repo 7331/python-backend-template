@@ -6,6 +6,9 @@ from typing import TypedDict
 
 from pydantic import BaseModel, ConfigDict
 
+{% if include_object_storage -%}
+from app.infrastructure.object_storage.client import ObjectStorageClient
+{% endif -%}
 {% if include_postgres -%}
 from app.infrastructure.postgres.client import Database
 from app.infrastructure.rate_limit.postgres_limiter_store import PostgresRateLimiter
@@ -20,6 +23,9 @@ class Resources(BaseModel):
 {% if include_postgres %}
     file_read_executor: BlockingExecutor
     database: Database
+{%- if include_object_storage %}
+    object_storage: ObjectStorageClient
+{%- endif %}
     rate_limiter: PostgresRateLimiter
 {%- else %}
     rate_limiter: InMemoryRateLimiter
