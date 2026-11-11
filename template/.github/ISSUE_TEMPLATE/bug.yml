@@ -1,0 +1,44 @@
+name: Bug
+description: Something doesn't work as intended.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        File only work that outlives the session, a deferred bug or a decision that should stay findable. A fix done now needs only its pull request. Keep this description the current truth and put updates in comments. A pull request into `main` with a `Fixes #N` line closes it on merge. Done means it works on the running system. Close as not planned with a one-line reason.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What's wrong, and who hits it. Quote the reporter.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps
+      value: |
+        1. 
+
+        Expected:
+
+        Actual:
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: "VERIFIED: ran it and it returned this. FROM CODE: read, not run. NOT CHECKED: still open. Scrub tokens, account names and personal data."
+      value: |
+        - VERIFIED <date>:
+        - FROM CODE: `path:line`
+        - NOT CHECKED:
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance
+      description: Checkable on the running system.
+      value: "- "
+    validations:
+      required: true

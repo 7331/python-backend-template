@@ -1,0 +1,37 @@
+name: Image scan
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-image:
+    name: Backend image — Trivy
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    env:
+      IMAGE_TAG: image-scan-backend:run-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the backend image
+        run: docker buildx build --load --file backend/Dockerfile --tag "$IMAGE_TAG" .
+      - name: Scan for fixable HIGH and CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_TAG }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: What to do when this fails
+        if: failure()
+        run: echo "::notice::A base image has a fixable HIGH or CRITICAL vulnerability. Merge Dependabot's base-images pull request, or move the digests in backend/Dockerfile by hand, then deploy."
+      - name: Remove this run's image
+        if: always()
+        run: docker image rm --force "$IMAGE_TAG"
