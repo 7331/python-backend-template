@@ -3,8 +3,15 @@ _.handlers
 {%- if include_accounts %}
 _.REGISTERED_MODEL_MODULES
 {%- elif include_object_storage %}
+_.API_PREFIX
+_.ApiRequest
+_.describe_error_responses
 _.REGISTERED_MODEL_MODULES
+_.DatabaseSession
 _.build_postgres_enum
+_.url
+_.upload_url
+_.download_url
 {%- else %}
 _.API_PREFIX
 _.ApiRequest

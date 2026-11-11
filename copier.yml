@@ -4,6 +4,7 @@ _answers_file: .copier-answers.yml
 _skip_if_exists:
   - /README.md
   - /AGENTS.md
+  - /backend/openapi.json
 _tasks:
   - command: "[ -d .git ] || git init -b main"
     when: "{{ _copier_operation == 'copy' }}"

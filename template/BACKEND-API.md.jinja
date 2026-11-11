@@ -36,6 +36,9 @@ Sources for the layout: [fastapi-best-practices](https://github.com/zhanymkanov/
     app/
       __main__.py cli.py         `python -m app`: one typer command per process role
       main.py                    create_app: routes, middlewares, exception handlers
+{%- if include_accounts and include_object_storage %}
+      option_routers.py          the routers of template options newer than accounts; main.py's router lines stay the app's
+{%- endif %}
 {%- if include_worker %}
       worker.py                  run_worker: the job kinds, SIGTERM, the claim loop
       worker_healthcheck.py      the worker container's healthcheck
@@ -57,7 +60,7 @@ Sources for the layout: [fastapi-best-practices](https://github.com/zhanymkanov/
         queue_probe/             a sample job kind that proves the queue; delete it with the app's first real job
 {%- endif %}
 {%- if include_object_storage %}
-        files/                   a sample domain: presigned upload, stored file, presigned download, delete
+        files/                   a sample domain: presigned upload, stored file, presigned download, delete{% if include_accounts %}, each file its account's own{% else %}; no routes without accounts, four commands instead{% endif %}
 {%- endif %}
       infrastructure/
 {%- if include_postgres %}
@@ -94,16 +97,31 @@ flowchart TD
 {%- if include_worker %}
     cli["app.cli"] --> main["app.main | app.worker"]
     main --> healthcheck["app.worker_healthcheck"]
+{%- if include_accounts and include_object_storage %}
+    healthcheck --> option_routers["app.option_routers"]
+    option_routers --> contract["app.openapi_contract"]
+{%- else %}
     healthcheck --> contract["app.openapi_contract"]
+{%- endif %}
 {%- else %}
     cli["app.cli"] --> main["app.main"]
+{%- if include_accounts and include_object_storage %}
+    main --> option_routers["app.option_routers"]
+    option_routers --> contract["app.openapi_contract"]
+{%- else %}
     main --> contract["app.openapi_contract"]
+{%- endif %}
 {%- endif %}
     contract --> middlewares["app.allowed_host_middleware | app.rate_limit_middleware | app.request_body_limit_middleware | app.request_log_middleware | app.unhandled_error_middleware"]
     middlewares --> lifespan["app.lifespan"]
+{%- if include_accounts and include_object_storage %}
+    lifespan --> files["app.{{ root_package }}.files, which imports the accounts domain's access check"]
+    files --> events["app.log_events"]
+{%- else %}
     lifespan --> events["app.log_events"]
+{%- endif %}
 {%- if include_accounts %}
-    events --> domains["app.{{ root_package }}.accounts{% if include_worker %}, then app.{{ root_package }}.queue_probe{% endif %}{% if include_object_storage %}, then app.{{ root_package }}.files{% endif %}"]
+    events --> domains["app.{{ root_package }}.accounts{% if include_worker %}, then app.{{ root_package }}.queue_probe{% endif %}"]
 {%- else %}
     events --> domains["app.{{ root_package }}"]
 {%- endif %}
@@ -389,7 +407,7 @@ The unit expects the checkout at `/opt/{{ project_slug }}` and the env files at 
 
 ## Object storage
 
-Files live in an S3-compatible bucket and their bytes never pass through the API, so its 64 KB body cap stays. `app/infrastructure/object_storage/` holds the settings and `ObjectStorageClient`, opened once in the lifespan and held on `Resources`. `app/{{ root_package }}/files/` is a sample domain on top of it, with a `files` table on its own Alembic line (`object_storage_0001`).
+Files live in an S3-compatible bucket and their bytes never pass through the API, so its 64 KB body cap stays. `app/infrastructure/object_storage/` holds the settings and `ObjectStorageClient`, opened once in the lifespan and held on `Resources`. `app/{{ root_package }}/files/` is a sample domain on top of it, with a `files` table on its own Alembic line (`object_storage_0001`).{% if include_accounts %} Every file route needs the signed-in account, and a file belongs to the account that stored it.{% else %} This app has no accounts, so it has no file routes: the diagram below is what `FileService` does when one of its four commands calls it.{% endif %}
 
 ```mermaid
 sequenceDiagram
@@ -397,28 +415,36 @@ sequenceDiagram
     participant api as API
     participant bucket as Bucket
     client->>api: POST /api/v1/file-uploads {content_type, size_bytes}
-    api-->>client: upload_id, upload_url signed for pending/<id>, that type and that size
+    api-->>client: upload_id, upload_url signed for {{ 'pending/<account>/<id>' if include_accounts else 'pending/<id>' }}, that type and that size
     client->>bucket: PUT upload_url with the bytes
     bucket-->>client: 200, or 403 when the size, type, key or time differ
     client->>api: POST /api/v1/files {upload_id}
-    api->>bucket: HEAD pending/<id>
+    api->>bucket: HEAD {{ 'pending/<account>/<id>' if include_accounts else 'pending/<id>' }}
     api->>api: check the size and type the bucket reports, insert the files row
     api->>bucket: copy to files/<id> as an attachment, only if the ETag still matches
     api-->>client: file_id, download_url (a signed GET)
     client->>bucket: GET download_url
 ```
 
-- The upload URL signs `Content-Length` and `Content-Type`, so the bucket refuses another size or type with 403. The API then reads both from the bucket (`HEAD`) and checks them again; it never trusts what the client declared. The allowed types are `FileContentType` and the limit is `MAXIMUM_FILE_SIZE_BYTES` (10 MiB), both in the `files` package. One PUT carries at most 5 GiB ([uploading objects](https://docs.aws.amazon.com/AmazonS3/latest/userguide/upload-objects.html)); multipart upload is not built.
-- A presigned URL works again and again until it expires ([presigned URLs](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html)). So uploads land under `pending/`, and the copy under `files/` is one no client ever held a write URL for.
+- The upload URL signs `Content-Length` and `Content-Type`. On the bucket server this template ships for local work, a PUT with another size, another type or another key answers 403 (`e2e/object_storage_flow.py` measures it). The API then reads size and type back from the bucket (`HEAD`) and checks them again; it never trusts what the client declared. The allowed types are `FileContentType` and the limit is `MAXIMUM_FILE_SIZE_BYTES` (10 MiB), both in the `files` package. `ObjectStorageClient` signs no single upload over 5 GiB; multipart upload is not built.
+- An upload URL stays usable until it expires, also after the file is stored (the flow uploads to it a second time). So uploads land under `pending/`, and the copy under `files/` is one no client ever held a write URL for: the second upload does not change the stored file.
 - The bucket is private. A download is a presigned GET that lives `{{ environment_prefix }}_OBJECT_STORAGE_DOWNLOAD_URL_LIFETIME_SECONDS` (60); whoever holds it can read the file until then. The object is stored with `Content-Disposition: attachment`. The content type is still the uploader's claim: decode the bytes before treating a file as an image.
-- Delete removes the row, then `files/<id>` and `pending/<id>`, then commits. When the bucket fails the request answers 503, the row comes back and the client repeats the delete. So a failure leaves a row without an object, never an object nobody can find.
+- Delete removes the row, then `files/<id>` and the upload under `pending/`, then commits. When the bucket fails the request answers 503, the row comes back and the client repeats the delete. So a failure leaves a row without an object, never an object nobody can find.
 - When the commit fails after the copy, the object exists without a row until the client stores the same `upload_id` again. Nothing sweeps the bucket for such objects.
-- Uploads that are never stored stay under `pending/`. Give the bucket a lifecycle rule that expires that prefix after a day ([lifecycle rules](https://docs.aws.amazon.com/AmazonS3/latest/userguide/intro-lifecycle-rules.html)); the app removes none of them.
+- Uploads that are never stored stay under `pending/`. The app removes none of them: give the production bucket a rule that expires that prefix after a day, and check it works on the bucket you use.
 - `{{ environment_prefix }}_OBJECT_STORAGE_ENDPOINT_URL` is where the API calls the bucket, and `{{ environment_prefix }}_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL` is the host signed into the URLs a client gets. Locally they differ (the compose network and `127.0.0.1`); against a hosted bucket they are the same.
 - The client makes no call at startup and `/ready` does not check the bucket, so a bucket outage fails only the file routes, with 503 `object_storage_unavailable` and an `ObjectStorageCallFailed` log line.
-- `docker-compose.yml` runs [versitygw](https://github.com/versity/versitygw) as `object-storage` for local work only: read-only, no capabilities, the bucket made at start, published on `127.0.0.1:OBJECT_STORAGE_PUBLISH_PORT`. `deploy/docker-compose.production.yml` puts it behind a profile, so production starts no bucket server. There the settings name a real bucket and a key that may only get, put and delete objects in it. A browser client also needs a CORS rule on the bucket.
-- The Postgres backups hold the `files` rows, not the objects. Turn on versioning or replication for the bucket. A database restored to an earlier time can name objects deleted since.
-- The sample has no owner and no sign-in: anyone may upload, and a file id is the only key to a file. Put the app's own access check on the router before it is public. To drop the sample, delete the package, its router in `app/main.py`, its import in `migrations/env.py` and its lines in `pyproject.toml`, and drop the table in an `app` revision.
+- `docker-compose.yml` runs [versitygw](https://github.com/versity/versitygw) as `object-storage` for local work only: uid 10002, read-only, no capabilities, the bucket made at start, published on `127.0.0.1:OBJECT_STORAGE_PUBLISH_PORT`. Its data volume is mounted on the image's `/var/tmp`, a directory any uid may write, so the bucket needs no root and no init container. `deploy/docker-compose.production.yml` puts the service behind a profile, so production starts no bucket server. There the settings name a real bucket and a key that may only get, put and delete objects in it. A browser client also needs a CORS rule on the bucket. Nothing here was run against a hosted bucket: run the flow's checks against yours before relying on its refusals.
+- The Postgres backups hold the `files` rows, not the objects: the bucket needs its own. A database restored to an earlier time can name objects deleted since.
+{%- if include_accounts %}
+- Every file route takes `AccountAccessDependency`: without a session it answers 401. The `files` row carries `account_id`, and reading, signing a download and deleting all look the file up by id and owner together, so another account gets the same 404 `file_not_found` as for an id that does not exist. An upload is signed for a key under the account's own `pending/<account id>/`, so one account cannot store another's upload either.
+- `files.account_id` is `ON DELETE RESTRICT`: Postgres refuses to delete an account that still owns files. A cascade would drop the rows and leave the objects in the bucket with nothing pointing at them. Code that deletes an account deletes its files through `FileService` first.
+- Signing an upload URL has its own budget, `FILE_UPLOAD_URLS_PER_WINDOW_PER_IP` (10 a minute per address, the passkey writes' number), beside the general 120 in `app/rate_limit_middleware.py`. Each signed URL lets its holder put up to 10 MiB under `pending/` until the lifecycle rule runs, so the general budget alone would let one address park 1.2 GiB a minute; this one caps it at 100 MiB. It is kept in Postgres like the others, so API replicas share it.
+- To drop the sample, delete the package, its router in `app/option_routers.py`, its budget in `app/rate_limit_middleware.py`, its import in `migrations/env.py` and its lines in `pyproject.toml`, and drop the table in an `app` revision.
+{%- else %}
+- There is no identity to scope a file to, so nothing over HTTP can sign an upload, read or delete a file. `python -m app create-file-upload`, `store-uploaded-file`, `read-file` and `delete-file` call `FileService` from inside the container, and `e2e/object_storage_flow.py` drives them. Before giving the service a router, put the app's own access check on it and an owner column on `files`; the accounts option does both.
+- To drop the sample, delete the package, its commands in `app/cli.py`, its import in `migrations/env.py` and its lines in `pyproject.toml`, and drop the table in an `app` revision.
+{%- endif %}
 {%- endif %}
 
 ## Connection packages and external HTTP APIs

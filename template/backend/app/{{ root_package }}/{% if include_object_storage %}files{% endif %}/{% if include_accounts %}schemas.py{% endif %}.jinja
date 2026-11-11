@@ -4,9 +4,9 @@ from typing import Annotated
 from pydantic import Field
 
 from app.{{ root_package }}.files.enums import FileContentType
+from app.{{ root_package }}.files.types import MAXIMUM_FILE_SIZE_BYTES
 from app.shared.schemas import ApiRequest, ApiResponse
 
-MAXIMUM_FILE_SIZE_BYTES = 10 * 1024 * 1024
 FILE_ID_PATTERN = r"^[A-Za-z0-9_-]{32}$"
 FileId = Annotated[str, Field(pattern=FILE_ID_PATTERN)]
 

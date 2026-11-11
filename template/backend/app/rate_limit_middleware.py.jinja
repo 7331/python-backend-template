@@ -18,11 +18,17 @@ logger = log.get_logger(__name__)
 REQUESTS_PER_WINDOW_PER_IP = 120
 {%- if include_accounts %}
 PASSKEY_WRITES_PER_WINDOW_PER_IP = 10
+{%- if include_object_storage %}
+FILE_UPLOAD_URLS_PER_WINDOW_PER_IP = 10
+{%- endif %}
 {%- endif %}
 WINDOW_SECONDS = 60
 UNLIMITED_PATHS = frozenset({"/health", "/ready"})
 {%- if include_accounts %}
 PASSKEY_WRITE_PREFIX = f"{API_PREFIX}/accounts/passkey/"
+{%- if include_object_storage %}
+FILE_UPLOAD_URL_PATH = f"{API_PREFIX}/file-uploads"
+{%- endif %}
 {%- endif %}
 
 
@@ -35,11 +41,20 @@ class RequestBudget(BaseModel):
 
 
 PASSKEY_WRITE_BUDGET = RequestBudget(budget_name="passkey_write", requests_per_window=PASSKEY_WRITES_PER_WINDOW_PER_IP)
+{%- if include_object_storage %}
+FILE_UPLOAD_URL_BUDGET = RequestBudget(
+    budget_name="file_upload_url", requests_per_window=FILE_UPLOAD_URLS_PER_WINDOW_PER_IP
+)
+{%- endif %}
 
 
 def find_extra_budget(method: str, *, path: str) -> RequestBudget | None:
     if method == "POST" and path.startswith(PASSKEY_WRITE_PREFIX):
         return PASSKEY_WRITE_BUDGET
+{%- if include_object_storage %}
+    if method == "POST" and path == FILE_UPLOAD_URL_PATH:
+        return FILE_UPLOAD_URL_BUDGET
+{%- endif %}
     return None
 {%- else %}
 

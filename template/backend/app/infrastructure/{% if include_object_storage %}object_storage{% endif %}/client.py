@@ -89,7 +89,7 @@ class ObjectStorageClient:
 
     def create_upload_url(self, object_key: str, *, content_type: str, size_bytes: int) -> PresignedUrl:
         if not 0 < size_bytes <= MAXIMUM_SINGLE_REQUEST_OBJECT_BYTES:
-            raise ValueError("one PUT and one copy carry at most 5 GiB; a larger object needs a multipart upload")
+            raise ValueError("this client signs no single upload over 5 GiB; a larger object needs a multipart upload")
         expires_at = datetime.now(UTC) + self.upload_url_lifetime
         return PresignedUrl(
             url=self.signing_client.generate_presigned_url(

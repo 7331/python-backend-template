@@ -4,6 +4,8 @@ from pydantic import BaseModel, ConfigDict
 
 from app.infrastructure.object_storage.types import PresignedUrl
 
+MAXIMUM_FILE_SIZE_BYTES = 10 * 1024 * 1024
+
 
 class FileUpload(BaseModel):
     model_config = ConfigDict(frozen=True)

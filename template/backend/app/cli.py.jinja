@@ -1,19 +1,45 @@
+{%- set has_file_commands = include_object_storage and not include_accounts -%}
+{%- if has_file_commands %}
+from collections.abc import AsyncGenerator, Coroutine
+from contextlib import asynccontextmanager
+{%- endif %}
 from pathlib import Path
 from typing import Annotated
 
+{% if has_file_commands -%}
+from pydantic import BaseModel
+{% endif -%}
 import typer
 import uvicorn
-{%- if include_worker %}
+{%- if include_worker or has_file_commands %}
 import uvloop
 
+{% endif -%}
+{%- if has_file_commands %}
+from app.{{ root_package }}.files.enums import FileContentType
+from app.{{ root_package }}.files.service import FileService
+from app.{{ root_package }}.files.types import MAXIMUM_FILE_SIZE_BYTES
+{%- endif %}
+{%- if include_worker %}
 from app.{{ root_package }}.queue_probe.jobs import QueueProbeOutcome, QueueProbePayload
 {%- endif %}
 
 from app.configuration import read_application_settings
 {%- if include_worker %}
 from app.infrastructure.task_queue.client import enqueue_job
+{%- endif %}
+{%- if include_worker and has_file_commands %}
+from app.lifespan.composition import open_api_resources, open_process_resources
+{%- elif include_worker %}
 from app.lifespan.composition import open_process_resources
+{%- elif has_file_commands %}
+from app.lifespan.composition import open_api_resources
+{%- endif %}
+{%- if include_worker %}
 from app.lifespan.resources import ProcessRole
+{%- endif %}
+{%- if has_file_commands %}
+from app.shared.errors import AppError
 {%- endif %}
 from app.shared.logging import configure_logging
 {%- if include_worker %}
@@ -73,6 +99,73 @@ def enqueue_queue_probe(
     typer.echo(uvloop.run(enqueue_queue_probe_job(QueueProbePayload(hold_seconds=hold_seconds, outcome=outcome))))
 {%- endif %}
 
+{%- if has_file_commands %}
+
+
+@asynccontextmanager
+async def open_file_service() -> AsyncGenerator[FileService]:
+    async with (
+        open_api_resources() as resources,
+        resources.database.session_factory() as session,
+        session.begin(),
+    ):
+        yield FileService.on_session(
+            session, object_storage=resources.object_storage, maximum_size_bytes=MAXIMUM_FILE_SIZE_BYTES
+        )
+
+
+def run_file_command(file_command: Coroutine[None, None, BaseModel | None]) -> None:
+    try:
+        command_result = uvloop.run(file_command)
+    except AppError as refusal:
+        typer.echo(refusal.code, err=True)
+        raise typer.Exit(code=1) from refusal
+    if command_result is not None:
+        typer.echo(command_result.model_dump_json())
+
+
+async def create_file_upload_on_service(content_type: FileContentType, *, size_bytes: int) -> BaseModel:
+    async with open_file_service() as file_service:
+        return file_service.create_upload(content_type, size_bytes=size_bytes)
+
+
+async def store_uploaded_file_on_service(upload_id: str) -> BaseModel:
+    async with open_file_service() as file_service:
+        return await file_service.store_upload(upload_id)
+
+
+async def read_file_on_service(file_id: str) -> BaseModel:
+    async with open_file_service() as file_service:
+        return await file_service.get_file(file_id)
+
+
+async def delete_file_on_service(file_id: str) -> None:
+    async with open_file_service() as file_service:
+        await file_service.delete_file(file_id)
+
+
+@command_line.command("create-file-upload")
+def create_file_upload(
+    content_type: Annotated[FileContentType, typer.Option()],
+    size_bytes: Annotated[int, typer.Option(min=1, max=MAXIMUM_FILE_SIZE_BYTES)],
+) -> None:
+    run_file_command(create_file_upload_on_service(content_type, size_bytes=size_bytes))
+
+
+@command_line.command("store-uploaded-file")
+def store_uploaded_file(upload_id: Annotated[str, typer.Option()]) -> None:
+    run_file_command(store_uploaded_file_on_service(upload_id))
+
+
+@command_line.command("read-file")
+def read_file(file_id: Annotated[str, typer.Option()]) -> None:
+    run_file_command(read_file_on_service(file_id))
+
+
+@command_line.command("delete-file")
+def delete_file(file_id: Annotated[str, typer.Option()]) -> None:
+    run_file_command(delete_file_on_service(file_id))
+{%- endif %}
 
 def run_command_line() -> None:
     command_line()

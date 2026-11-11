@@ -50,7 +50,7 @@ memory, which means one replica.
 | `include_postgres` | Default yes. Postgres 18, Alembic, WAL-G backups and a restore drill. |
 | `include_accounts` | Postgres only, default yes. Passkey sign-up and sign-in with cookie sessions. |
 | `include_worker` | Postgres only, default no. A job queue in a `jobs` table and a `worker` service. |
-| `include_object_storage` | Postgres only, default no. Presigned uploads and downloads against an S3-compatible bucket, a `files` table, a local bucket server in compose. Turned on at an update in an app with its own routers, `app/main.py` gets one import conflict: keep both lines and run `tools/dump_openapi.py`. |
+| `include_object_storage` | Postgres only, default no. Presigned uploads and downloads against an S3-compatible bucket, a `files` table, a local bucket server in compose. With accounts the file routes need the signed-in account and a file is its owner's; without accounts there are no file routes, only CLI commands. |
 
 ## Update an app
 
@@ -58,7 +58,9 @@ memory, which means one replica.
 uvx copier update --trust
 ```
 
-The tree must be clean. Conflicts land as inline markers. Each
+The tree must be clean. Conflicts land as inline markers, except in the generated `backend/openapi.json`, which an
+update never merges: rewrite it with `uv run --directory backend python tools/dump_openapi.py openapi.json` when the
+push gate says it is stale. Each
 [release](https://github.com/7331/python-backend-template/releases) lists the steps an update needs by hand.
 
 ## This repository

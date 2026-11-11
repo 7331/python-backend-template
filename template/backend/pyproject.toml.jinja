@@ -192,17 +192,20 @@ layers = [
 {%- else %}
     "main",
 {%- endif %}
+{%- if include_accounts and include_object_storage %}
+    "option_routers",
+{%- endif %}
     "openapi_contract",
     "allowed_host_middleware | rate_limit_middleware | request_body_limit_middleware | request_log_middleware | unhandled_error_middleware",
     "lifespan",
+{%- if include_accounts and include_object_storage %}
+    "{{ root_package }}.files",
+{%- endif %}
     "log_events",
 {%- if include_accounts %}
     "{{ root_package }}.accounts",
 {%- if include_worker %}
     "{{ root_package }}.queue_probe",
-{%- endif %}
-{%- if include_object_storage %}
-    "{{ root_package }}.files",
 {%- endif %}
 {%- else %}
     "{{ root_package }}",
@@ -238,7 +241,7 @@ Two domains import each other. Let a third, higher domain own the orchestration,
 [[tool.importlinter.contracts]]
 name = "Routes and entry modules never import a model or repository"
 type = "forbidden"
-source_modules = ["app.**.router", "app.**.dependencies", "app.**.cli", "app.main", "app.cli"]
+source_modules = ["app.**.router", "app.**.dependencies", "app.**.cli", "app.main", "app.cli"{% if include_accounts and include_object_storage %}, "app.option_routers"{% endif %}]
 forbidden_modules = ["app.**.models", "app.**.repository"]
 allow_indirect_imports = "true"
 broken_contract_guidance = """

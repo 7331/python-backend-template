@@ -40,6 +40,11 @@ jobs:
             include_accounts: "true"
             include_worker: "true"
             include_object_storage: "true"
+          - option_set: postgres-object-storage
+            include_postgres: "true"
+            include_accounts: "false"
+            include_worker: "false"
+            include_object_storage: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -164,6 +169,10 @@ jobs:
           - option_set: postgres-accounts-worker-object-storage
             include_accounts: "true"
             include_worker: "true"
+            include_object_storage: "true"
+          - option_set: postgres-object-storage
+            include_accounts: "false"
+            include_worker: "false"
             include_object_storage: "true"
     env:
       INCLUDE_ACCOUNTS: ${{ matrix.include_accounts }}

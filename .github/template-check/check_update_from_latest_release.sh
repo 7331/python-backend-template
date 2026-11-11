@@ -79,14 +79,6 @@ fail_on_update_conflicts() {
   fi
 }
 
-keep_both_sides_where_a_routed_option_meets_the_app_route() {
-  [[ "${app_state}" == changed && "${INCLUDE_OBJECT_STORAGE:-false}" == true ]] || return 0
-  sed --in-place --regexp-extended '/^(<{7} before updating|={7}|>{7} after updating)$/d' backend/app/main.py
-  uv run --quiet --directory backend ruff check --select I --fix --quiet app
-  uv run --quiet --directory backend python tools/dump_openapi.py openapi.json
-  git add backend/app/main.py backend/openapi.json
-}
-
 echo "Generating the app from ${latest_release_tag}"
 uvx copier copy --trust --defaults --vcs-ref "${latest_release_tag}" \
   --data project_slug=sample-app \
@@ -106,7 +98,6 @@ fi
 echo "Updating the ${app_state} app from ${latest_release_tag} to the template's HEAD"
 uvx copier update --trust --defaults --vcs-ref HEAD --conflict inline --data "include_worker=${INCLUDE_WORKER:-false}" \
   --data "include_object_storage=${INCLUDE_OBJECT_STORAGE:-false}"
-keep_both_sides_where_a_routed_option_meets_the_app_route
 fail_on_update_conflicts
 uv run --quiet --directory backend python tools/dump_openapi.py openapi.json
 if [[ "${app_state}" == changed ]]; then
