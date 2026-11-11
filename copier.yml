@@ -4,6 +4,7 @@ _answers_file: .copier-answers.yml
 _skip_if_exists:
   - /README.md
   - /AGENTS.md
+  - /backend/openapi.json
 _tasks:
   - command: "[ -d .git ] || git init -b main"
     when: "{{ _copier_operation == 'copy' }}"
@@ -20,6 +21,11 @@ _message_after_copy: |
   {%- endif %}
   {%- if include_accounts %}
     {{ environment_prefix }}_ACCOUNTS_PUBLIC_BASE_URL: the origin passkeys are bound to.
+  {%- endif %}
+  {%- if include_object_storage %}
+    {{ environment_prefix }}_OBJECT_STORAGE_ACCESS_KEY_ID and {{ environment_prefix }}_OBJECT_STORAGE_SECRET_ACCESS_KEY: any two
+      long random values locally, where they also become the local bucket server's own; the bucket's real pair in
+      production.
   {%- endif %}
     {{ environment_prefix }}_TRUSTED_PROXY_ADDRESSES: the reverse proxy's address or its network in CIDR form (a docker
       network's subnet), when one sits in front.
@@ -82,6 +88,16 @@ include_worker:
   validator: >-
     {% if include_worker and not include_postgres %}
     the worker keeps its job queue in Postgres, so it needs include_postgres
+    {% endif %}
+
+include_object_storage:
+  type: bool
+  help: Include object storage (uploads straight to an S3-compatible bucket through presigned URLs, a files table in Postgres)
+  default: false
+  when: "{{ include_postgres }}"
+  validator: >-
+    {% if include_object_storage and not include_postgres %}
+    object storage keeps a row per file in Postgres, so it needs include_postgres
     {% endif %}
 
 environment_prefix:

@@ -3,8 +3,8 @@
 [![template-check](https://github.com/7331/python-backend-template/actions/workflows/template-check.yml/badge.svg?branch=main)](https://github.com/7331/python-backend-template/actions/workflows/template-check.yml)
 
 A [Copier](https://copier.readthedocs.io/en/stable/) template for a Python backend: FastAPI on Python 3.15, uv,
-Docker Compose, and the gates that keep every app the same shape. Postgres, passkey accounts and a job worker are
-options. There is no frontend; the OpenAPI document is the contract.
+Docker Compose, and the gates that keep every app the same shape. Postgres, passkey accounts, a job worker and
+object storage are options. There is no frontend; the OpenAPI document is the contract.
 
 ## Start an app
 
@@ -33,6 +33,8 @@ A backend that one team runs on one host, with a web app, a mobile app, a CLI or
   session.
 - **Worker:** work that should not hold a request open: sending email or push notifications, processing an upload,
   syncing from a third-party API, retrying a delivery that failed.
+- **Object storage:** files a client uploads and downloads: avatars, attachments, exports. The bytes go straight
+  to an S3-compatible bucket and never through the API.
 
 It is not for server-rendered pages or a cluster: the deploy is Docker Compose on a single host. With Postgres the
 request budgets live in the database, so a second API replica shares them. Without Postgres they live in process
@@ -48,6 +50,7 @@ memory, which means one replica.
 | `include_postgres` | Default yes. Postgres 18, Alembic, WAL-G backups and a restore drill. |
 | `include_accounts` | Postgres only, default yes. Passkey sign-up and sign-in with cookie sessions. |
 | `include_worker` | Postgres only, default no. A job queue in a `jobs` table and a `worker` service. |
+| `include_object_storage` | Postgres only, default no. Presigned uploads and downloads against an S3-compatible bucket, a `files` table, a local bucket server in compose. With accounts the file routes need the signed-in account and a file is its owner's; without accounts there are no file routes, only CLI commands. |
 
 ## Update an app
 
@@ -55,7 +58,9 @@ memory, which means one replica.
 uvx copier update --trust
 ```
 
-The tree must be clean. Conflicts land as inline markers. Each
+The tree must be clean. Conflicts land as inline markers, except in the generated `backend/openapi.json`, which an
+update never merges: rewrite it with `uv run --directory backend python tools/dump_openapi.py openapi.json` when the
+push gate says it is stale. Each
 [release](https://github.com/7331/python-backend-template/releases) lists the steps an update needs by hand.
 
 ## This repository

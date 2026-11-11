@@ -1,0 +1,151 @@
+{%- set owner_parameter = ", *, account_id: int" if include_accounts else "" -%}
+{%- set owner_argument = ", account_id=account_id" if include_accounts else "" -%}
+import secrets
+from typing import Self
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.{{ root_package }}.files.enums import FileContentType, UploadRefusalReason
+from app.{{ root_package }}.files.errors import (
+    FileMissingError,
+    UploadChangedError,
+    UploadNotAllowedError,
+    UploadNotFoundError,
+)
+from app.{{ root_package }}.files.log_events import FileDeleted, FileStored, UploadRefused
+from app.{{ root_package }}.files.models import File
+from app.{{ root_package }}.files.repository import FileRepository
+from app.{{ root_package }}.files.types import FileUpload, StoredFile
+from app.infrastructure.object_storage.client import ObjectStorageClient
+from app.infrastructure.object_storage.errors import ObjectChangedError, ObjectMissingError
+from app.infrastructure.object_storage.types import StoredObject
+from app.shared import logging as log
+
+logger = log.get_logger(__name__)
+
+FILE_ID_RANDOM_BYTES = 24
+PENDING_OBJECT_KEY_PREFIX = "pending/"
+FILE_OBJECT_KEY_PREFIX = "files/"
+
+
+def build_pending_object_key(upload_id: str{{ owner_parameter }}) -> str:
+{%- if include_accounts %}
+    return f"{PENDING_OBJECT_KEY_PREFIX}{account_id}/{upload_id}"
+{%- else %}
+    return f"{PENDING_OBJECT_KEY_PREFIX}{upload_id}"
+{%- endif %}
+
+
+def build_file_object_key(file_id: str) -> str:
+    return f"{FILE_OBJECT_KEY_PREFIX}{file_id}"
+
+
+def find_upload_refusal_reason(pending_object: StoredObject, *, maximum_size_bytes: int) -> UploadRefusalReason | None:
+    if pending_object.content_type not in FileContentType:
+        return UploadRefusalReason.CONTENT_TYPE_NOT_ALLOWED
+    if not 0 < pending_object.size_bytes <= maximum_size_bytes:
+        return UploadRefusalReason.SIZE_NOT_ALLOWED
+    return None
+
+
+class FileService:
+    def __init__(
+        self, *, repository: FileRepository, object_storage: ObjectStorageClient, maximum_size_bytes: int
+    ) -> None:
+        self.repository = repository
+        self.object_storage = object_storage
+        self.maximum_size_bytes = maximum_size_bytes
+
+    @classmethod
+    def on_session(
+        cls, session: AsyncSession, *, object_storage: ObjectStorageClient, maximum_size_bytes: int
+    ) -> Self:
+        return cls(
+            repository=FileRepository(session=session),
+            object_storage=object_storage,
+            maximum_size_bytes=maximum_size_bytes,
+        )
+
+    def present_file(self, file: File) -> StoredFile:
+        return StoredFile(
+            file_id=file.public_id,
+            content_type=file.content_type,
+            size_bytes=file.size_bytes,
+            created_at=file.created_at,
+            download_url=self.object_storage.create_download_url(build_file_object_key(file.public_id)),
+        )
+
+    def create_upload(
+        self, content_type: FileContentType, *, size_bytes: int{{ ", account_id: int" if include_accounts }}
+    ) -> FileUpload:
+        upload_id = secrets.token_urlsafe(FILE_ID_RANDOM_BYTES)
+        return FileUpload(
+            upload_id=upload_id,
+            content_type=content_type.value,
+            upload_url=self.object_storage.create_upload_url(
+                build_pending_object_key(upload_id{{ owner_argument }}),
+                content_type=content_type.value,
+                size_bytes=size_bytes,
+            ),
+        )
+
+    async def store_upload(self, upload_id: str{{ owner_parameter }}) -> StoredFile:
+        stored_file = await self.repository.find_file(upload_id{{ owner_argument }})
+        if stored_file is not None:
+            return self.present_file(stored_file)
+        pending_object_key = build_pending_object_key(upload_id{{ owner_argument }})
+        pending_object = await self.object_storage.find_stored_object(pending_object_key)
+        if pending_object is None:
+            raise UploadNotFoundError("no object was uploaded for this upload id, or it has expired")
+        refusal_reason = find_upload_refusal_reason(pending_object, maximum_size_bytes=self.maximum_size_bytes)
+        if refusal_reason is not None:
+            log.emit(
+                logger,
+                event=UploadRefused(
+                    reason=refusal_reason.value,
+                    content_type=pending_object.content_type,
+                    size_bytes=pending_object.size_bytes,
+                ),
+            )
+            await self.object_storage.delete_object(pending_object_key)
+            raise UploadNotAllowedError("the uploaded object has a content type or size that is not allowed")
+        file = await self.repository.insert_file_unless_present(
+            upload_id,
+            content_type=pending_object.content_type,
+            size_bytes=pending_object.size_bytes,
+{%- if include_accounts %}
+            account_id=account_id,
+{%- endif %}
+        )
+        if file is None:
+            stored_file = await self.repository.find_file(upload_id{{ owner_argument }})
+            if stored_file is None:
+                raise UploadNotFoundError("no object was uploaded for this upload id, or it has expired")
+            return self.present_file(stored_file)
+        try:
+            await self.object_storage.copy_object_as_attachment(
+                pending_object,
+                source_object_key=pending_object_key,
+                destination_object_key=build_file_object_key(upload_id),
+            )
+        except (ObjectChangedError, ObjectMissingError) as changed_error:
+            raise UploadChangedError("the uploaded object changed while it was being stored") from changed_error
+        log.emit(
+            logger,
+            event=FileStored(file_row_id=file.id, content_type=file.content_type, size_bytes=file.size_bytes),
+        )
+        return self.present_file(file)
+
+    async def get_file(self, file_id: str{{ owner_parameter }}) -> StoredFile:
+        file = await self.repository.find_file(file_id{{ owner_argument }})
+        if file is None:
+            raise FileMissingError("no file has this id")
+        return self.present_file(file)
+
+    async def delete_file(self, file_id: str{{ owner_parameter }}) -> None:
+        file_row_id = await self.repository.delete_file(file_id{{ owner_argument }})
+        if file_row_id is None:
+            raise FileMissingError("no file has this id")
+        await self.object_storage.delete_object(build_file_object_key(file_id))
+        await self.object_storage.delete_object(build_pending_object_key(file_id{{ owner_argument }}))
+        log.emit(logger, event=FileDeleted(file_row_id=file_row_id))

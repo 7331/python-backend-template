@@ -1,0 +1,19 @@
+from typing import Annotated
+
+from fastapi import Depends, Path
+
+from app.{{ root_package }}.files.schemas import FILE_ID_PATTERN
+from app.{{ root_package }}.files.service import FileService
+from app.{{ root_package }}.files.types import MAXIMUM_FILE_SIZE_BYTES
+from app.lifespan.dependencies import DatabaseSession, ResourcesDependency
+
+FileIdPath = Annotated[str, Path(pattern=FILE_ID_PATTERN)]
+
+
+def get_file_service(session: DatabaseSession, *, resources: ResourcesDependency) -> FileService:
+    return FileService.on_session(
+        session, object_storage=resources.object_storage, maximum_size_bytes=MAXIMUM_FILE_SIZE_BYTES
+    )
+
+
+FileServiceDependency = Annotated[FileService, Depends(get_file_service)]

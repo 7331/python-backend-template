@@ -11,6 +11,9 @@ from app.lifespan.api_lifespan import run_api_lifespan
 from app.lifespan.dependencies import ResourcesDependency
 {%- endif %}
 from app.openapi_contract import install_openapi_contract, name_operation_after_handler
+{%- if include_accounts and include_object_storage %}
+from app.option_routers import add_option_routers
+{%- endif %}
 from app.rate_limit_middleware import RateLimitRequestsMiddleware
 from app.request_body_limit_middleware import RequestBodyLimitMiddleware
 from app.request_log_middleware import RequestLogMiddleware
@@ -43,6 +46,9 @@ def create_app() -> FastAPI:
         openapi_url=None,
         generate_unique_id_function=name_operation_after_handler,
     )
+{%- if include_accounts and include_object_storage %}
+    add_option_routers(application)
+{%- endif %}
 {%- if include_postgres %}
     application.add_api_route("/ready", read_readiness, methods=["GET", "HEAD"], include_in_schema=False)
 {%- else %}

@@ -8,6 +8,9 @@ dependencies = [
     "alembic>=1.20.1",
 {%- endif %}
     "asgi-correlation-id>=5.0.1",
+{%- if include_object_storage %}
+    "botocore>=1.43.0",
+{%- endif %}
     "fastapi>=0.162.0",
     "orjson>=3.13.0",
 {%- if include_postgres %}
@@ -189,9 +192,15 @@ layers = [
 {%- else %}
     "main",
 {%- endif %}
+{%- if include_accounts and include_object_storage %}
+    "option_routers",
+{%- endif %}
     "openapi_contract",
     "allowed_host_middleware | rate_limit_middleware | request_body_limit_middleware | request_log_middleware | unhandled_error_middleware",
     "lifespan",
+{%- if include_accounts and include_object_storage %}
+    "{{ root_package }}.files",
+{%- endif %}
     "log_events",
 {%- if include_accounts %}
     "{{ root_package }}.accounts",
@@ -202,6 +211,9 @@ layers = [
     "{{ root_package }}",
 {%- endif %}
     "infrastructure.rate_limit",
+{%- if include_object_storage %}
+    "infrastructure.object_storage",
+{%- endif %}
 {%- if include_worker %}
     "infrastructure.task_queue",
 {%- endif %}
@@ -224,12 +236,12 @@ type = "acyclic_siblings"
 ancestors = ["app.{{ root_package }}"]
 broken_contract_guidance = """
 Two domains import each other. Let a third, higher domain own the orchestration, or move the shared part down."""
-{%- if include_accounts %}
+{%- if include_accounts or include_object_storage %}
 
 [[tool.importlinter.contracts]]
 name = "Routes and entry modules never import a model or repository"
 type = "forbidden"
-source_modules = ["app.**.router", "app.**.dependencies", "app.**.cli", "app.main", "app.cli"]
+source_modules = ["app.**.router", "app.**.dependencies", "app.**.cli", "app.main", "app.cli"{% if include_accounts and include_object_storage %}, "app.option_routers"{% endif %}]
 forbidden_modules = ["app.**.models", "app.**.repository"]
 allow_indirect_imports = "true"
 broken_contract_guidance = """
@@ -242,6 +254,8 @@ source_modules = ["app.**.models"]
 forbidden_modules = ["fastapi", "starlette"]
 broken_contract_guidance = """
 Models are tables only. Wire shapes go in schemas.py and request handling in router.py or dependencies.py."""
+{%- endif %}
+{%- if include_accounts %}
 
 [[tool.importlinter.contracts]]
 name = "Only app.{{ root_package }}.accounts imports its models and repository"
@@ -250,6 +264,39 @@ protected_modules = ["app.{{ root_package }}.accounts.models", "app.{{ root_pack
 allowed_importers = ["app.{{ root_package }}.accounts"]
 broken_contract_guidance = """
 Another package reached into the accounts domain's storage. Call AccountService and use its read types instead."""
+{%- endif %}
+{%- if include_object_storage %}
+
+[[tool.importlinter.contracts]]
+name = "Only app.{{ root_package }}.files imports its models and repository"
+type = "protected"
+protected_modules = ["app.{{ root_package }}.files.models", "app.{{ root_package }}.files.repository"]
+allowed_importers = ["app.{{ root_package }}.files"]
+broken_contract_guidance = """
+Another package reached into the files domain's storage. Call FileService and use its read types instead."""
+
+[[tool.importlinter.contracts]]
+name = "Only app.infrastructure.object_storage imports the S3 client library"
+type = "forbidden"
+source_modules = ["app"]
+forbidden_modules = ["botocore", "boto3"]
+ignore_imports = ["app.infrastructure.object_storage.client -> botocore"]
+allow_indirect_imports = "true"
+broken_contract_guidance = """
+The bucket is reached through ObjectStorageClient in app.infrastructure.object_storage.client. Add the call there as
+one typed method; a domain never holds a botocore client or reads a botocore reply."""
+
+[[tool.importlinter.contracts]]
+name = "Only app.infrastructure.object_storage imports its settings and log events"
+type = "protected"
+protected_modules = [
+    "app.infrastructure.object_storage.configuration",
+    "app.infrastructure.object_storage.log_events",
+]
+allowed_importers = ["app.infrastructure.object_storage"]
+broken_contract_guidance = """
+A domain takes the ObjectStorageClient from Resources and imports only client, types and errors. The bucket's
+settings and credentials stay inside the package."""
 {%- endif %}
 {%- if include_worker %}
 

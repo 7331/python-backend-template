@@ -1,0 +1,25 @@
+from functools import lru_cache
+
+from pydantic import Field, SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+MAXIMUM_PRESIGNED_URL_LIFETIME_SECONDS = 7 * 24 * 60 * 60
+
+
+class ObjectStorageSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="{{ environment_prefix }}_OBJECT_STORAGE_", extra="ignore")
+
+    endpoint_url: str = "http://object-storage:7070"
+    public_endpoint_url: str = "http://127.0.0.1:9000"
+    region: str = "us-east-1"
+    bucket: str = "{{ project_slug }}"
+    uses_path_style_addressing: bool = True
+    access_key_id: str
+    secret_access_key: SecretStr = Field(repr=False)
+    upload_url_lifetime_seconds: int = Field(default=300, ge=1, le=MAXIMUM_PRESIGNED_URL_LIFETIME_SECONDS)
+    download_url_lifetime_seconds: int = Field(default=60, ge=1, le=MAXIMUM_PRESIGNED_URL_LIFETIME_SECONDS)
+
+
+@lru_cache
+def read_object_storage_settings() -> ObjectStorageSettings:
+    return ObjectStorageSettings()

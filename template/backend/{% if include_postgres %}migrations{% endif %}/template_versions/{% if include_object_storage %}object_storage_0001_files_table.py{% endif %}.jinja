@@ -1,0 +1,36 @@
+from collections.abc import Sequence
+
+from alembic import op
+import sqlalchemy as sa
+
+revision: str = "object_storage_0001"
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = ("object_storage",)
+depends_on: str | Sequence[str] | None = {{ '"accounts_0001"' if include_accounts else "None" }}
+
+
+def upgrade() -> None:
+    op.create_table(
+        "files",
+        sa.Column("id", sa.BigInteger(), sa.Identity(always=False), nullable=False),
+        sa.Column("public_id", sa.String(length=32), nullable=False),
+{%- if include_accounts %}
+        sa.Column("account_id", sa.BigInteger(), nullable=False),
+{%- endif %}
+        sa.Column("content_type", sa.String(length=127), nullable=False),
+        sa.Column("size_bytes", sa.BigInteger(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+{%- if include_accounts %}
+        sa.ForeignKeyConstraint(["account_id"], ["accounts.id"], ondelete="RESTRICT"),
+{%- endif %}
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("public_id"),
+    )
+{%- if include_accounts %}
+    op.create_index(op.f("ix_files_account_id"), "files", ["account_id"], unique=False)
+{%- endif %}
+
+
+def downgrade() -> None:
+    raise RuntimeError("forward only: fix forward with a new revision")

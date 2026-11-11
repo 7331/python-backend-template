@@ -35,6 +35,16 @@ jobs:
             include_postgres: "true"
             include_accounts: "false"
             include_worker: "true"
+          - option_set: postgres-accounts-worker-object-storage
+            include_postgres: "true"
+            include_accounts: "true"
+            include_worker: "true"
+            include_object_storage: "true"
+          - option_set: postgres-object-storage
+            include_postgres: "true"
+            include_accounts: "false"
+            include_worker: "false"
+            include_object_storage: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -51,6 +61,7 @@ jobs:
           INCLUDE_POSTGRES: ${{ matrix.include_postgres }}
           INCLUDE_ACCOUNTS: ${{ matrix.include_accounts }}
           INCLUDE_WORKER: ${{ matrix.include_worker }}
+          INCLUDE_OBJECT_STORAGE: ${{ matrix.include_object_storage || 'false' }}
           OPTION_SET: ${{ matrix.option_set }}
         run: |
           git config --global user.name template-check
@@ -61,6 +72,7 @@ jobs:
             --data "include_postgres=${INCLUDE_POSTGRES}" \
             --data "include_accounts=${INCLUDE_ACCOUNTS}" \
             --data "include_worker=${INCLUDE_WORKER}" \
+            --data "include_object_storage=${INCLUDE_OBJECT_STORAGE}" \
             . "${RUNNER_TEMP}/${OPTION_SET}"
           git -C "${RUNNER_TEMP}/${OPTION_SET}" add --all
           git -C "${RUNNER_TEMP}/${OPTION_SET}" commit --quiet --message "chore: generate the app"
@@ -102,10 +114,16 @@ jobs:
             include_postgres: "true"
             include_accounts: "true"
             include_worker: "true"
+          - option_set: postgres-accounts-worker-object-storage
+            include_postgres: "true"
+            include_accounts: "true"
+            include_worker: "true"
+            include_object_storage: "true"
     env:
       INCLUDE_POSTGRES: ${{ matrix.include_postgres }}
       INCLUDE_ACCOUNTS: ${{ matrix.include_accounts }}
       INCLUDE_WORKER: ${{ matrix.include_worker }}
+      INCLUDE_OBJECT_STORAGE: ${{ matrix.include_object_storage || 'false' }}
       OPTION_SET: ${{ matrix.option_set }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -148,9 +166,18 @@ jobs:
           - option_set: postgres-accounts-worker
             include_accounts: "true"
             include_worker: "true"
+          - option_set: postgres-accounts-worker-object-storage
+            include_accounts: "true"
+            include_worker: "true"
+            include_object_storage: "true"
+          - option_set: postgres-object-storage
+            include_accounts: "false"
+            include_worker: "false"
+            include_object_storage: "true"
     env:
       INCLUDE_ACCOUNTS: ${{ matrix.include_accounts }}
       INCLUDE_WORKER: ${{ matrix.include_worker }}
+      INCLUDE_OBJECT_STORAGE: ${{ matrix.include_object_storage || 'false' }}
       OPTION_SET: ${{ matrix.option_set }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -173,6 +200,7 @@ jobs:
             --data include_postgres=true \
             --data "include_accounts=${INCLUDE_ACCOUNTS}" \
             --data "include_worker=${INCLUDE_WORKER}" \
+            --data "include_object_storage=${INCLUDE_OBJECT_STORAGE}" \
             . "${RUNNER_TEMP}/boot-${OPTION_SET}"
       - name: Write the env files
         working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}
@@ -184,6 +212,14 @@ jobs:
           sed --in-place "s/^POSTGRES_PASSWORD=$/&$(openssl rand -hex 24)/" .env.database-owner
           grep --quiet --extended-regexp '^SAMPLE_APPLICATION_DATABASE_PASSWORD=[0-9a-f]{48}$' .env
           grep --quiet --extended-regexp '^POSTGRES_PASSWORD=[0-9a-f]{48}$' .env.database-owner
+      - name: Write the bucket credentials
+        if: ${{ matrix.include_object_storage == 'true' }}
+        working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}
+        run: |
+          sed --in-place "s/^SAMPLE_OBJECT_STORAGE_ACCESS_KEY_ID=$/&$(openssl rand -hex 12)/" .env
+          sed --in-place "s/^SAMPLE_OBJECT_STORAGE_SECRET_ACCESS_KEY=$/&$(openssl rand -hex 24)/" .env
+          grep --quiet --extended-regexp '^SAMPLE_OBJECT_STORAGE_ACCESS_KEY_ID=[0-9a-f]{24}$' .env
+          grep --quiet --extended-regexp '^SAMPLE_OBJECT_STORAGE_SECRET_ACCESS_KEY=[0-9a-f]{48}$' .env
       - name: Build the image and start the stack
         working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}
         run: |
@@ -202,6 +238,10 @@ jobs:
         if: ${{ matrix.include_worker == 'true' }}
         working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}/e2e
         run: uv run --locked python worker_flow.py
+      - name: Run the object storage flow
+        if: ${{ matrix.include_object_storage == 'true' }}
+        working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}/e2e
+        run: uv run --locked python object_storage_flow.py
       - name: Print container logs
         if: ${{ failure() }}
         working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}

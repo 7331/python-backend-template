@@ -22,6 +22,9 @@ ALLOWED_VERBS = frozenset(
         "complete",
         "configure",
         "consume",
+{%- if include_object_storage %}
+        "copy",
+{%- endif %}
         "count",
         "create",
         "delete",
