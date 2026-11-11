@@ -103,4 +103,5 @@ if [[ "${app_state}" == changed ]]; then
 fi
 git add --all
 git commit --quiet --no-verify --allow-empty --message "Updated app"
-uvx prek run --all-files
+uvx prek run --stage pre-commit --all-files
+uvx prek run --stage pre-push --all-files

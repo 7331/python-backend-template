@@ -184,3 +184,24 @@ rules:
       - metavariable-regex:
           metavariable: $MODEL
           regex: ^.*View$
+
+  - id: blocking-work-on-a-named-executor
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Run blocking work on a named executor held on Resources. run_in_executor(None, ...) uses the default
+      executor, which also serves the loop's DNS lookups, so one slow call stalls name resolution.
+    pattern: $LOOP.run_in_executor(None, ...)
+
+  - id: middlewares-are-pure-asgi
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Write a middleware as a class with __call__(scope, receive, send) and add it with add_middleware.
+      BaseHTTPMiddleware, which the @app.middleware decorator wraps, stops ContextVar changes from propagating
+      upwards (https://starlette.dev/middleware/).
+    pattern-either:
+      - pattern: starlette.middleware.base.BaseHTTPMiddleware
+      - pattern: |
+          @$APP.middleware(...)
+          def $HANDLER(...): ...
