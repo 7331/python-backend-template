@@ -124,6 +124,29 @@ services:
       retries: 3
       start_period: 20s
       start_interval: 2s
+{%- if include_worker %}
+
+  worker:
+    <<: [*backend_image, *backend_hardening]
+    env_file:
+      - *backend_environment_file
+    restart: unless-stopped
+    command: ["python", "-m", "app", "run-worker"]
+    stop_grace_period: 25s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - backend_data
+      - backend_egress
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.worker_healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+{%- endif %}
 
 networks:
 {%- if include_postgres %}

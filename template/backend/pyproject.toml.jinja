@@ -183,17 +183,28 @@ type = "layers"
 containers = ["app"]
 layers = [
     "cli",
+{%- if include_worker %}
+    "main | worker",
+    "worker_healthcheck",
+{%- else %}
     "main",
+{%- endif %}
     "openapi_contract",
     "allowed_host_middleware | rate_limit_middleware | request_body_limit_middleware | request_log_middleware | unhandled_error_middleware",
     "lifespan",
     "log_events",
 {%- if include_accounts %}
     "{{ root_package }}.accounts",
+{%- if include_worker %}
+    "{{ root_package }}.queue_probe",
+{%- endif %}
 {%- else %}
     "{{ root_package }}",
 {%- endif %}
     "infrastructure.rate_limit",
+{%- if include_worker %}
+    "infrastructure.task_queue",
+{%- endif %}
 {%- if include_postgres %}
     "infrastructure.postgres",
 {%- endif %}
@@ -239,4 +250,15 @@ protected_modules = ["app.{{ root_package }}.accounts.models", "app.{{ root_pack
 allowed_importers = ["app.{{ root_package }}.accounts"]
 broken_contract_guidance = """
 Another package reached into the accounts domain's storage. Call AccountService and use its read types instead."""
+{%- endif %}
+{%- if include_worker %}
+
+[[tool.importlinter.contracts]]
+name = "Worker and queue code never import FastAPI, Starlette or a dependencies module"
+type = "forbidden"
+source_modules = ["app.worker", "app.worker_healthcheck", "app.infrastructure.task_queue", "app.**.jobs"]
+forbidden_modules = ["fastapi", "starlette", "app.**.dependencies"]
+broken_contract_guidance = """
+A worker has no request. A job handler calls a service with the session it is given, and anything a route and a job
+both need lives in the service, never in router.py or dependencies.py."""
 {%- endif %}

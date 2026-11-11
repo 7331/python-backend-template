@@ -27,6 +27,9 @@ uv run python health_flow.py
 {%- if include_accounts %}
 uv run python accounts_flow.py
 {%- endif %}
+{%- if include_worker %}
+uv run python worker_flow.py
+{%- endif %}
 ```
 
 Keep run output outside the repository.

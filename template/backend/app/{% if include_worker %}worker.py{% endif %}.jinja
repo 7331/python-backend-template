@@ -1,0 +1,39 @@
+import asyncio
+import signal
+
+from app.{{ root_package }}.queue_probe.jobs import QueueProbePayload
+from app.infrastructure.task_queue.client import JobPayload
+from app.infrastructure.task_queue.configuration import read_task_queue_settings
+from app.infrastructure.task_queue.log_events import WorkerStarted, WorkerStopped
+from app.infrastructure.task_queue.worker_service import JobQueueWorker
+from app.lifespan.composition import open_process_resources
+from app.lifespan.resources import ProcessRole
+from app.shared import logging as log
+from app.worker_healthcheck import WORKER_HEARTBEAT_PATH
+
+logger = log.get_logger(__name__)
+
+JOB_PAYLOAD_CLASSES: tuple[type[JobPayload], ...] = (QueueProbePayload,)
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT)
+
+
+async def run_worker() -> None:
+    task_queue_settings = read_task_queue_settings()
+    stop_requested = asyncio.Event()
+    event_loop = asyncio.get_running_loop()
+    for stop_signal in STOP_SIGNALS:
+        event_loop.add_signal_handler(stop_signal, stop_requested.set)
+    async with open_process_resources(process_role=ProcessRole.WORKER) as process_resources:
+        log.emit(
+            logger, event=WorkerStarted(job_kinds=[payload_class.kind for payload_class in JOB_PAYLOAD_CLASSES])
+        )
+        await JobQueueWorker(
+            database=process_resources.database,
+            payload_classes=JOB_PAYLOAD_CLASSES,
+            poll_interval_seconds=task_queue_settings.poll_interval_seconds,
+            job_timeout_seconds=task_queue_settings.job_timeout_seconds,
+            job_lease_seconds=task_queue_settings.job_lease_seconds,
+            stop_requested=stop_requested,
+            record_heartbeat=WORKER_HEARTBEAT_PATH.touch,
+        ).run_until_stopped()
+        log.emit(logger, event=WorkerStopped())

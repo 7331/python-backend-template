@@ -3,9 +3,22 @@ from typing import Annotated
 
 import typer
 import uvicorn
+{%- if include_worker %}
+import uvloop
+
+from app.{{ root_package }}.queue_probe.jobs import QueueProbeOutcome, QueueProbePayload
+{%- endif %}
 
 from app.configuration import read_application_settings
+{%- if include_worker %}
+from app.infrastructure.task_queue.client import enqueue_job
+from app.lifespan.composition import open_process_resources
+from app.lifespan.resources import ProcessRole
+{%- endif %}
 from app.shared.logging import configure_logging
+{%- if include_worker %}
+from app.worker import run_worker
+{%- endif %}
 
 command_line = typer.Typer(no_args_is_help=True, add_completion=False, help="{{ project_description }}")
 
@@ -35,6 +48,30 @@ def serve_api(
         log_config=None,
         timeout_graceful_shutdown=20,
     )
+{%- if include_worker %}
+
+
+@command_line.command("run-worker")
+def run_worker_process() -> None:
+    uvloop.run(run_worker())
+
+
+async def enqueue_queue_probe_job(payload: QueueProbePayload) -> int:
+    async with (
+        open_process_resources(process_role=ProcessRole.COMMAND) as process_resources,
+        process_resources.database.session_factory() as session,
+        session.begin(),
+    ):
+        return await enqueue_job(session, payload=payload)
+
+
+@command_line.command("enqueue-queue-probe")
+def enqueue_queue_probe(
+    hold_seconds: Annotated[float, typer.Option()] = 0.0,
+    outcome: Annotated[QueueProbeOutcome, typer.Option()] = QueueProbeOutcome.SUCCEED,
+) -> None:
+    typer.echo(uvloop.run(enqueue_queue_probe_job(QueueProbePayload(hold_seconds=hold_seconds, outcome=outcome))))
+{%- endif %}
 
 
 def run_command_line() -> None:
