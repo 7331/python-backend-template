@@ -496,6 +496,8 @@ The shell scripts in `deploy/` have no hook. Run `shellcheck` on them after a ch
 
 No unit tests. Verification is running the real system: the gates above day to day, and the flows in `e2e/`, which start the compose stack and check it from outside. A flow is one user journey through the public HTTP surface. It is due after a change to its journey's behaviour, a migration, the compose files or the deploy files. Flows run by hand, never as a CI or hook gate. `e2e/README.md` holds the rules for writing one.
 
+When work is split into steps, every step passes the gates. A step that changes behaviour runs the flows it touches, once. After the last step the same flows run once more, from the base of the work, so steps that pass alone are also checked together. With a suite this small, "the flows it touches" is often all of them. Beyond that, the whole suite runs only when asked. When a flow fails, run it on the base before blaming the step: red there too means it was already broken.
+
 ## Container image and environments
 
 `backend/Dockerfile` is multi-stage and follows [uv's Docker guide](https://docs.astral.sh/uv/guides/integration/docker/): dependencies install before the source is copied, and the virtualenv is built in a builder stage and copied whole, so a Python bump changes only the `FROM` lines. The image runs as a non-root user, and compose runs it read-only with a small `/tmp` tmpfs and every capability dropped. One image serves every process (`serve-api`{% if include_postgres %}, `alembic upgrade head`{% endif %}, a worker). `Dockerfile.dockerignore` keeps everything the service does not run out of the build context.
