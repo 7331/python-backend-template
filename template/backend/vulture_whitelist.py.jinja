@@ -8,6 +8,7 @@ _.ApiRequest
 _.ResourcesDependency
 _.describe_error_responses
 {%- if include_postgres %}
+_.REGISTERED_MODEL_MODULES
 _.DatabaseSession
 _.SurrogateId
 _.Timestamps
@@ -15,6 +16,5 @@ _.build_postgres_enum
 {%- endif %}
 {%- endif %}
 {%- if include_worker %}
-_.REGISTERED_MODEL_MODULES
 _.require_lease_longer_than_job_timeout
 {%- endif %}

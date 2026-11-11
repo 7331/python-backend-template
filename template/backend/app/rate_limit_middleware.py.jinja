@@ -73,12 +73,12 @@ class RateLimitRequestsMiddleware:
         resources = read_resources_of_scope(scope)
         self.report_untrusted_proxy_once(request, resources=resources)
         client_ip_address = read_client_ip_address(request, trusted_proxy_networks=resources.trusted_proxy_networks)
-        retry_after_seconds = resources.rate_limiter.count_seconds_until_admitted(
+        retry_after_seconds = {% if include_postgres %}await {% endif %}resources.rate_limiter.count_seconds_until_admitted(
             f"ip:{client_ip_address}", limit=REQUESTS_PER_WINDOW_PER_IP, window_seconds=WINDOW_SECONDS
         )
         extra_budget = find_extra_budget(request.method, path=scope["path"])
         if retry_after_seconds == 0 and extra_budget is not None:
-            retry_after_seconds = resources.rate_limiter.count_seconds_until_admitted(
+            retry_after_seconds = {% if include_postgres %}await {% endif %}resources.rate_limiter.count_seconds_until_admitted(
                 f"{extra_budget.budget_name}:{client_ip_address}",
                 limit=extra_budget.requests_per_window,
                 window_seconds=WINDOW_SECONDS,

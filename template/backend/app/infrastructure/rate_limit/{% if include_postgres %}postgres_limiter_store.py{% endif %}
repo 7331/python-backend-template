@@ -1,0 +1,166 @@
+import asyncio
+import math
+import time
+
+from sqlalchemy import BigInteger, Select, Text, bindparam, cast, delete, exists, func, select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+from app.infrastructure.rate_limit.limiter_store import InMemoryRateLimiter
+from app.infrastructure.rate_limit.log_events import RateLimitStoreUnreachable
+from app.infrastructure.rate_limit.models import RateLimitScope
+from app.shared import logging as log
+
+logger = log.get_logger(__name__)
+
+RATE_LIMIT_CHECK_DEADLINE_SECONDS = 1
+RATE_LIMIT_RETRY_AFTER_FAILURE_SECONDS = 5
+RATE_LIMIT_SWEEP_INTERVAL_SECONDS = 60
+RATE_LIMIT_CONNECT_TIMEOUT_SECONDS = 2
+RATE_LIMIT_STATEMENT_TIMEOUT_SECONDS = 5
+RATE_LIMIT_LOCK_TIMEOUT_SECONDS = 1
+MICROSECONDS_PER_SECOND = 1_000_000
+
+CURRENT_MICROSECONDS = cast(func.extract("epoch", func.statement_timestamp()) * MICROSECONDS_PER_SECOND, BigInteger)
+INTERVAL_MICROSECONDS = bindparam("interval_microseconds", type_=BigInteger)
+WINDOW_MICROSECONDS = bindparam("window_microseconds", type_=BigInteger)
+LIMITED_SCOPE = bindparam("limited_scope", type_=Text)
+IDLE_SCOPE_DELETE_STATEMENT = delete(RateLimitScope).where(
+    RateLimitScope.theoretical_arrival_microseconds < CURRENT_MICROSECONDS
+)
+
+
+def build_admission_statement() -> Select[bool, int | None]:
+    stored_arrival = RateLimitScope.theoretical_arrival_microseconds
+    first_admission = insert(RateLimitScope).values(
+        scope=LIMITED_SCOPE, theoretical_arrival_microseconds=CURRENT_MICROSECONDS + INTERVAL_MICROSECONDS
+    )
+    first_arrival = first_admission.excluded.theoretical_arrival_microseconds
+    admission = (
+        first_admission.on_conflict_do_update(
+            index_elements=[RateLimitScope.scope],
+            set_={
+                "theoretical_arrival_microseconds": func.greatest(stored_arrival + INTERVAL_MICROSECONDS, first_arrival)
+            },
+            where=stored_arrival - (first_arrival - INTERVAL_MICROSECONDS)
+            <= WINDOW_MICROSECONDS - INTERVAL_MICROSECONDS,
+        )
+        .returning(RateLimitScope.scope)
+        .cte("admission")
+    )
+    stored_arrival_before_statement = (
+        select(stored_arrival).where(RateLimitScope.scope == LIMITED_SCOPE).scalar_subquery()
+    )
+    return select(
+        exists(select(admission.c.scope)).label("is_admitted"),
+        (
+            stored_arrival_before_statement + INTERVAL_MICROSECONDS - WINDOW_MICROSECONDS - CURRENT_MICROSECONDS
+        ).label("wait_microseconds"),
+    )
+
+
+ADMISSION_STATEMENT = build_admission_statement()
+
+
+class PostgresRateLimiter:
+    def __init__(
+        self, dsn: str, *, application_name: str, pool_size: int, process_rate_limiter: InMemoryRateLimiter
+    ) -> None:
+        self.engine: AsyncEngine = create_async_engine(
+            dsn,
+            pool_size=pool_size,
+            max_overflow=0,
+            pool_timeout=RATE_LIMIT_CHECK_DEADLINE_SECONDS,
+            hide_parameters=True,
+            isolation_level="AUTOCOMMIT",
+            connect_args={
+                "application_name": application_name,
+                "options": (
+                    f"-c statement_timeout={RATE_LIMIT_STATEMENT_TIMEOUT_SECONDS * 1000} "
+                    f"-c lock_timeout={RATE_LIMIT_LOCK_TIMEOUT_SECONDS * 1000}"
+                ),
+                "connect_timeout": RATE_LIMIT_CONNECT_TIMEOUT_SECONDS,
+            },
+        )
+        self.process_rate_limiter = process_rate_limiter
+        self.running_admissions: set[asyncio.Task[int | None]] = set()
+        self.running_sweeps: set[asyncio.Task[None]] = set()
+        self.is_postgres_unreachable = False
+        self.skip_postgres_until = 0.0
+        self.sweep_idle_scopes_at = time.monotonic() + RATE_LIMIT_SWEEP_INTERVAL_SECONDS
+
+    async def count_seconds_until_admitted(self, scope: str, *, limit: int, window_seconds: int) -> int:
+        now = time.monotonic()
+        seconds_until_admitted = None
+        if now >= self.skip_postgres_until:
+            if self.is_postgres_unreachable:
+                self.skip_postgres_until = now + RATE_LIMIT_RETRY_AFTER_FAILURE_SECONDS
+            if now >= self.sweep_idle_scopes_at:
+                self.sweep_idle_scopes_at = now + RATE_LIMIT_SWEEP_INTERVAL_SECONDS
+                self.start_idle_scope_sweep()
+            seconds_until_admitted = await self.find_admission_within_deadline(
+                scope, limit=limit, window_seconds=window_seconds
+            )
+        if seconds_until_admitted is None:
+            return self.process_rate_limiter.count_seconds_until_admitted(
+                scope, limit=limit, window_seconds=window_seconds
+            )
+        return seconds_until_admitted
+
+    async def find_admission_within_deadline(self, scope: str, *, limit: int, window_seconds: int) -> int | None:
+        admission = asyncio.create_task(self.find_admission(scope, limit=limit, window_seconds=window_seconds))
+        self.running_admissions.add(admission)
+        admission.add_done_callback(self.running_admissions.discard)
+        finished_admissions, _ = await asyncio.wait({admission}, timeout=RATE_LIMIT_CHECK_DEADLINE_SECONDS)
+        if not finished_admissions:
+            admission.cancel()
+            self.record_unreachable_postgres(TimeoutError())
+            return None
+        return admission.result()
+
+    async def find_admission(self, scope: str, *, limit: int, window_seconds: int) -> int | None:
+        window_microseconds = window_seconds * MICROSECONDS_PER_SECOND
+        try:
+            async with self.engine.connect() as connection:
+                admission = (
+                    await connection.execute(
+                        ADMISSION_STATEMENT,
+                        {
+                            "limited_scope": scope,
+                            "interval_microseconds": window_microseconds // limit,
+                            "window_microseconds": window_microseconds,
+                        },
+                    )
+                ).one()
+        except (SQLAlchemyError, OSError) as error:
+            self.record_unreachable_postgres(error)
+            return None
+        self.is_postgres_unreachable = False
+        self.skip_postgres_until = 0.0
+        if admission.is_admitted:
+            return 0
+        if admission.wait_microseconds is None:
+            return 1
+        return max(1, math.ceil(admission.wait_microseconds / MICROSECONDS_PER_SECOND))
+
+    def start_idle_scope_sweep(self) -> None:
+        sweep = asyncio.create_task(self.delete_idle_scopes())
+        self.running_sweeps.add(sweep)
+        sweep.add_done_callback(self.running_sweeps.discard)
+
+    async def delete_idle_scopes(self) -> None:
+        try:
+            async with self.engine.connect() as connection:
+                await connection.execute(IDLE_SCOPE_DELETE_STATEMENT)
+        except (SQLAlchemyError, OSError) as error:
+            self.record_unreachable_postgres(error)
+
+    def record_unreachable_postgres(self, error: BaseException) -> None:
+        self.skip_postgres_until = time.monotonic() + RATE_LIMIT_RETRY_AFTER_FAILURE_SECONDS
+        if not self.is_postgres_unreachable:
+            self.is_postgres_unreachable = True
+            log.emit(logger, event=RateLimitStoreUnreachable(error_type=type(error).__name__))
+
+    async def close(self) -> None:
+        await self.engine.dispose()

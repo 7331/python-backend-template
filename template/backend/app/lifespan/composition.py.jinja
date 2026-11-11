@@ -17,12 +17,16 @@ from app.configuration import read_application_settings
 from app.infrastructure.postgres.client import Database
 {%- endif %}
 from app.infrastructure.rate_limit.limiter_store import InMemoryRateLimiter
+{%- if include_postgres %}
+from app.infrastructure.rate_limit.postgres_limiter_store import PostgresRateLimiter
+{%- endif %}
 from app.lifespan.resources import {% if include_worker %}ProcessResources, ProcessRole, {% endif %}Resources
 {%- if include_postgres %}
 from app.shared.blocking_executor import BlockingExecutor
 
 API_DATABASE_POOL_SIZE = 10
 API_DATABASE_MAXIMUM_OVERFLOW = 5
+RATE_LIMIT_DATABASE_POOL_SIZE = 2
 {%- if include_worker %}
 PROCESS_DATABASE_POOL_SIZE = 2
 {%- endif %}
@@ -51,6 +55,19 @@ async def open_database(
     exit_stack.push_async_callback(database.close)
     await database.refuse_schema_behind_head(file_read_executor=file_read_executor)
     return database
+
+
+def open_rate_limiter(
+    exit_stack: AsyncExitStack, *, application_settings: ApplicationSettings, connection_settings: ConnectionSettings
+) -> PostgresRateLimiter:
+    rate_limiter = PostgresRateLimiter(
+        connection_settings.build_application_database_url().get_secret_value(),
+        application_name=f"{application_settings.service_name}-api-rate-limit",
+        pool_size=RATE_LIMIT_DATABASE_POOL_SIZE,
+        process_rate_limiter=InMemoryRateLimiter(),
+    )
+    exit_stack.push_async_callback(rate_limiter.close)
+    return rate_limiter
 {%- endif %}
 
 
@@ -69,7 +86,9 @@ async def open_api_resources() -> AsyncGenerator[Resources]:
                 connection_settings=connection_settings,
                 file_read_executor=file_read_executor,
             ),
-            rate_limiter=InMemoryRateLimiter(),
+            rate_limiter=open_rate_limiter(
+                exit_stack, application_settings=application_settings, connection_settings=connection_settings
+            ),
             trusted_proxy_networks=application_settings.list_trusted_proxy_networks(),
         )
 {%- else %}
