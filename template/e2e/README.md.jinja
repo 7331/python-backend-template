@@ -11,7 +11,7 @@ End-to-end flows against a real compose stack, run by hand when a change needs t
   really deleted or a role lacking a privilege.
 - Shared code lives in modules named by concern (`stack_commands.py`, `http_client.py`, `flow_report.py`{% if include_accounts %},
   `software_passkey.py`{% endif %}), never copied between flows.
-- Each flow starts its own stack under a separate compose project with {% if include_postgres %}fresh passwords for both
+- Each flow starts its own stack from `docker-compose.yml` alone (`--file`), under a separate compose project with {% if include_postgres %}fresh passwords for both
   database roles and {% endif %}a free local port, prints one `PASS` or `FAIL` line per assertion, and removes the stack
   and its volumes, also after a failure. The exit code is 0 only when every assertion passed.
 - A flow is due after a change to its journey, a migration, the compose files or the deploy files. It is never a CI or

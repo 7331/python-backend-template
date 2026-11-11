@@ -76,17 +76,17 @@ def find_account_reply(reply: HttpReply) -> AccountReply | None:
 
 
 def require_signed_in_session(
-    flow_report: FlowReport, *, reply: HttpReply, expected_status: int, check_name: str
+    flow_report: FlowReport, *, reply: HttpReply, expected_status_code: int, check_name: str
 ) -> SignedInSession:
     account = find_account_reply(reply)
     session_cookie_value = reply.find_set_cookie_value(ACCOUNT_SESSION_COOKIE_NAME)
     flow_report.require_check(
         check_name,
-        passed=reply.status == expected_status
+        passed=reply.status_code == expected_status_code
         and account is not None
         and account.username == JOURNEY_USERNAME
         and bool(session_cookie_value),
-        detail=f"{reply.status}, account {'returned' if account else 'missing'}, "
+        detail=f"{reply.status_code}, account {'returned' if account else 'missing'}, "
         f"session cookie {'set' if session_cookie_value else 'missing'}",
     )
     if account is None or session_cookie_value is None:
@@ -99,7 +99,7 @@ def sign_up(flow_report: FlowReport, *, accounts_api: AccountsApi, passkey: Soft
         "/accounts/passkey/registration-options", json_body={"username": JOURNEY_USERNAME}, session_cookie_value=None
     )
     flow_report.require_check(
-        "registration options", passed=options_reply.status == 200, detail=str(options_reply.status)
+        "registration options", passed=options_reply.status_code == 200, detail=str(options_reply.status_code)
     )
     registration_options = RegistrationOptions.model_validate_json(options_reply.body)
     flow_report.require_check(
@@ -113,7 +113,7 @@ def sign_up(flow_report: FlowReport, *, accounts_api: AccountsApi, passkey: Soft
         session_cookie_value=None,
     )
     return require_signed_in_session(
-        flow_report, reply=registration_reply, expected_status=201, check_name="register the passkey"
+        flow_report, reply=registration_reply, expected_status_code=201, check_name="register the passkey"
     )
 
 
@@ -124,8 +124,8 @@ def check_current_account(
     current_account = find_account_reply(current_account_reply)
     flow_report.record_check(
         check_name,
-        passed=current_account_reply.status == 200 and current_account == signed_in_session.account,
-        detail=f"{current_account_reply.status}, account {'matches' if current_account == signed_in_session.account else 'differs'}",
+        passed=current_account_reply.status_code == 200 and current_account == signed_in_session.account,
+        detail=f"{current_account_reply.status_code}, account {'matches' if current_account == signed_in_session.account else 'differs'}",
     )
 
 
@@ -139,12 +139,14 @@ def sign_out(
     sign_out_reply = accounts_api.post_json(
         "/accounts/sign-out", json_body={}, session_cookie_value=signed_in_session.session_cookie_value
     )
-    flow_report.record_check("sign out", passed=sign_out_reply.status == 204, detail=str(sign_out_reply.status))
+    flow_report.record_check(
+        "sign out", passed=sign_out_reply.status_code == 204, detail=str(sign_out_reply.status_code)
+    )
     rejected_reply = accounts_api.read_current_account(signed_in_session.session_cookie_value)
     flow_report.record_check(
         "current account rejects the signed-out cookie",
-        passed=rejected_reply.status == 401,
-        detail=str(rejected_reply.status),
+        passed=rejected_reply.status_code == 401,
+        detail=str(rejected_reply.status_code),
     )
     session_count = read_database_value(COUNT_ACCOUNT_SESSIONS_QUERY, compose_stack=compose_stack)
     flow_report.record_check(
@@ -159,7 +161,7 @@ def sign_in(
         "/accounts/passkey/authentication-options", json_body={}, session_cookie_value=None
     )
     flow_report.require_check(
-        "authentication options", passed=options_reply.status == 200, detail=str(options_reply.status)
+        "authentication options", passed=options_reply.status_code == 200, detail=str(options_reply.status_code)
     )
     authentication_options = AuthenticationOptions.model_validate_json(options_reply.body)
     authentication_reply = accounts_api.post_json(
@@ -168,7 +170,10 @@ def sign_in(
         session_cookie_value=None,
     )
     signed_in_session = require_signed_in_session(
-        flow_report, reply=authentication_reply, expected_status=200, check_name="authenticate with the same passkey"
+        flow_report,
+        reply=authentication_reply,
+        expected_status_code=200,
+        check_name="authenticate with the same passkey",
     )
     flow_report.record_check(
         "authentication finds the signed-up account",

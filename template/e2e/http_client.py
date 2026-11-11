@@ -11,7 +11,7 @@ REQUEST_TIMEOUT_SECONDS = 5
 class HttpReply(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    status: int
+    status_code: int
     set_cookie_headers: tuple[str, ...]
     body: bytes
 
@@ -34,13 +34,13 @@ def send_http_request(
             timeout=REQUEST_TIMEOUT_SECONDS,
         ) as response:
             return HttpReply(
-                status=response.status,
+                status_code=response.status,
                 set_cookie_headers=tuple(response.headers.get_all("Set-Cookie") or ()),
                 body=response.read(),
             )
     except urllib.error.HTTPError as error_response:
         return HttpReply(
-            status=error_response.code,
+            status_code=error_response.code,
             set_cookie_headers=tuple(error_response.headers.get_all("Set-Cookie") or ()),
             body=error_response.read(),
         )
