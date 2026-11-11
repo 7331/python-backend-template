@@ -2,13 +2,14 @@ from typing import Annotated
 
 from fastapi import Depends, Request, Security
 from fastapi.security import APIKeyCookie
-from pydantic import SecretStr
+from pydantic import JsonValue, SecretStr
 
 from app.{{ root_package }}.accounts.configuration import read_relying_party
+from app.{{ root_package }}.accounts.enums import ChallengePurpose
 from app.{{ root_package }}.accounts.errors import CookieChallengedUnauthorizedError
 from app.{{ root_package }}.accounts.service import AccountService
-from app.{{ root_package }}.accounts.types import ACCOUNT_SESSION_COOKIE_NAME, AccountAccess
-from app.lifespan.dependencies import DatabaseSession
+from app.{{ root_package }}.accounts.types import ACCOUNT_SESSION_COOKIE_NAME, AccountAccess, ConsumedPasskeyChallenge
+from app.lifespan.dependencies import DatabaseSession, ResourcesDependency
 from app.shared.errors import UnauthorizedError
 
 account_session_cookie_scheme = APIKeyCookie(
@@ -24,6 +25,13 @@ def get_account_service(session: DatabaseSession) -> AccountService:
 
 
 AccountServiceDependency = Annotated[AccountService, Depends(get_account_service)]
+
+
+async def consume_signed_challenge_in_own_transaction(
+    credential_json: dict[str, JsonValue], *, purpose: ChallengePurpose, resources: ResourcesDependency
+) -> ConsumedPasskeyChallenge:
+    async with resources.database.session_factory() as challenge_session, challenge_session.begin():
+        return await get_account_service(challenge_session).consume_signed_challenge(credential_json, purpose=purpose)
 
 
 def read_account_session_token(

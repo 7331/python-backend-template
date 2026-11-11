@@ -67,11 +67,11 @@ async def open_api_resources() -> AsyncGenerator[Resources]:
                 file_read_executor=file_read_executor,
             ),
             rate_limiter=InMemoryRateLimiter(),
-            trusted_proxy_addresses=application_settings.list_trusted_proxy_addresses(),
+            trusted_proxy_networks=application_settings.list_trusted_proxy_networks(),
         )
 {%- else %}
     yield Resources(
         rate_limiter=InMemoryRateLimiter(),
-        trusted_proxy_addresses=application_settings.list_trusted_proxy_addresses(),
+        trusted_proxy_networks=application_settings.list_trusted_proxy_networks(),
     )
 {%- endif %}

@@ -6,9 +6,16 @@ from fastapi.routing import APIRoute
 from pydantic import JsonValue
 
 from app.rate_limit_middleware import UNLIMITED_PATHS
-from app.shared.error_responses import ERROR_CODES_EXTENSION
-from app.shared.errors import AppError, InvalidInputError, MalformedBodyError, RateLimitedError
-from app.shared.schemas import ErrorResponse
+from app.shared.error_responses import ERROR_CODES_EXTENSION, ERROR_PARAMETERS_EXTENSION
+from app.shared.errors import (
+    AppError,
+    HostNotAllowedError,
+    InvalidInputError,
+    MalformedBodyError,
+    RateLimitedError,
+    RequestBodyTooLargeError,
+)
+from app.shared.schemas import ErrorResponse, RequestBodyLimitParameters
 
 ERROR_RESPONSE_SCHEMA_NAME = "ErrorResponse"
 REQUEST_ID_HEADER_NAME = "X-Request-ID"
@@ -111,10 +118,21 @@ def complete_error_response(response: dict[str, JsonValue]) -> None:
     response["content"] = ERROR_RESPONSE_CONTENT
 
 
+def add_request_body_limit_error(responses: dict[str, JsonValue]) -> None:
+    too_large_response = add_error_codes(
+        responses, status_code=HTTPStatus.CONTENT_TOO_LARGE, error_codes=(RequestBodyTooLargeError.code,)
+    )
+    error_parameters = read_object_member(too_large_response, member_name=ERROR_PARAMETERS_EXTENSION)
+    error_parameters[RequestBodyTooLargeError.code] = RequestBodyLimitParameters.model_json_schema()
+
+
 def document_operation_errors(operation: JsonValue, *, path: str) -> None:
     match operation:
         case dict():
             responses = read_object_member(operation, member_name="responses")
+            add_error_codes(responses, status_code=HTTPStatus.BAD_REQUEST, error_codes=(HostNotAllowedError.code,))
+            if "requestBody" in operation:
+                add_request_body_limit_error(responses)
             if responses.pop("422", None) is not None:
                 validation_codes = (
                     (InvalidInputError.code, MalformedBodyError.code)

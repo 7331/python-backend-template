@@ -18,6 +18,9 @@ APPLICATION_DATABASE_ROLE = "{{ database_name }}_application"
 
 
 {% endif -%}
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]")
+
+
 class LogLevel(StrEnum):
     DEBUG = "DEBUG"
     INFO = "INFO"
@@ -30,14 +33,18 @@ class ApplicationSettings(BaseSettings):
 
     service_name: str = "{{ project_slug }}"
     trusted_proxy_addresses: str = ""
+    allowed_hosts: str = ""
     log_level: LogLevel = LogLevel.INFO
 
-    def list_trusted_proxy_addresses(self) -> frozenset[str]:
-        return frozenset(
-            str(ipaddress.ip_address(address.strip()))
-            for address in self.trusted_proxy_addresses.split(",")
-            if address.strip()
+    def list_trusted_proxy_networks(self) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+        return tuple(
+            ipaddress.ip_network(network.strip())
+            for network in self.trusted_proxy_addresses.split(",")
+            if network.strip()
         )
+
+    def list_allowed_hosts(self) -> tuple[str, ...]:
+        return (*LOCAL_HOSTS, *(host.strip() for host in self.allowed_hosts.split(",") if host.strip()))
 
 {%- if include_postgres %}
 

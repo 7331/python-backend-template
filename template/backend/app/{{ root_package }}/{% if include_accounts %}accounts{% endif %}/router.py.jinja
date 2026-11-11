@@ -5,7 +5,9 @@ from app.{{ root_package }}.accounts.dependencies import (
     AccountAccessDependency,
     AccountServiceDependency,
     AccountSessionTokenDependency,
+    consume_signed_challenge_in_own_transaction,
 )
+from app.{{ root_package }}.accounts.enums import ChallengePurpose
 from app.{{ root_package }}.accounts.errors import (
     AccountNotFoundError,
     AccountSessionExpiredError,
@@ -25,6 +27,7 @@ from app.{{ root_package }}.accounts.schemas import (
 )
 from app.{{ root_package }}.accounts.service import ACCOUNT_SESSION_LIFETIME
 from app.{{ root_package }}.accounts.types import ACCOUNT_SESSION_COOKIE_NAME, AccountSummary, StartedAccountSession
+from app.lifespan.dependencies import ResourcesDependency
 from app.shared.error_responses import describe_error_responses
 from app.shared.exception_handlers import NO_STORE_HEADERS
 from app.shared.path_params import API_PREFIX
@@ -84,10 +87,14 @@ async def register_passkey(
     registration_request: PasskeyRegistrationRequest,
     *,
     response: Response,
+    resources: ResourcesDependency,
     account_service: AccountServiceDependency,
 ) -> AccountResponse:
+    consumed_challenge = await consume_signed_challenge_in_own_transaction(
+        registration_request.credential, purpose=ChallengePurpose.SIGN_UP, resources=resources
+    )
     started_session = await account_service.sign_up(
-        registration_request.credential, label=registration_request.label
+        registration_request.credential, consumed_challenge=consumed_challenge, label=registration_request.label
     )
     return start_session_response(response, started_session=started_session)
 
@@ -110,9 +117,15 @@ async def authenticate_passkey(
     authentication_request: PasskeyAuthenticationRequest,
     *,
     response: Response,
+    resources: ResourcesDependency,
     account_service: AccountServiceDependency,
 ) -> AccountResponse:
-    started_session = await account_service.sign_in_with_passkey(authentication_request.credential)
+    consumed_challenge = await consume_signed_challenge_in_own_transaction(
+        authentication_request.credential, purpose=ChallengePurpose.SIGN_IN, resources=resources
+    )
+    started_session = await account_service.sign_in_with_passkey(
+        authentication_request.credential, consumed_challenge=consumed_challenge
+    )
     return start_session_response(response, started_session=started_session)
 
 
