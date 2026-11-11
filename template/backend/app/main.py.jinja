@@ -1,12 +1,15 @@
 from fastapi import FastAPI
 
 {% if include_accounts -%}
+from app.{{ root_package }}.accounts.configuration import read_relying_party
 from app.{{ root_package }}.accounts.router import accounts_router
 {% endif -%}
+from app.allowed_host_middleware import AllowedHostMiddleware
 from app.configuration import read_application_settings
 from app.lifespan.api_lifespan import api_lifespan
 from app.openapi_contract import install_openapi_contract, name_operation_after_handler
 from app.rate_limit_middleware import RateLimitRequestsMiddleware
+from app.request_body_limit_middleware import RequestBodyLimitMiddleware
 from app.request_log_middleware import RequestLogMiddleware
 from app.shared.correlation import ServerMintedCorrelationIdMiddleware
 from app.shared.exception_handlers import register_exception_handlers
@@ -34,7 +37,16 @@ def create_app() -> FastAPI:
 {%- if include_accounts %}
     application.include_router(accounts_router)
 {%- endif %}
+    application.add_middleware(RequestBodyLimitMiddleware)
     application.add_middleware(RateLimitRequestsMiddleware)
+{%- if include_accounts %}
+    application.add_middleware(
+        AllowedHostMiddleware,
+        allowed_hosts=(*application_settings.list_allowed_hosts(), read_relying_party().relying_party_id),
+    )
+{%- else %}
+    application.add_middleware(AllowedHostMiddleware, allowed_hosts=application_settings.list_allowed_hosts())
+{%- endif %}
     application.add_middleware(UnhandledErrorMiddleware)
     application.add_middleware(RequestLogMiddleware)
     application.add_middleware(ServerMintedCorrelationIdMiddleware)

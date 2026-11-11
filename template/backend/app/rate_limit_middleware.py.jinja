@@ -3,12 +3,17 @@ from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.lifespan.dependencies import read_resources_of_scope
+from app.lifespan.resources import Resources
+from app.log_events import ForwardedClientAddressIgnored
+from app.shared import logging as log
 from app.shared.errors import RateLimitedError
 from app.shared.exception_handlers import build_app_error_response
 {%- if include_accounts %}
 from app.shared.path_params import API_PREFIX
 {%- endif %}
-from app.shared.request import read_client_ip_address
+from app.shared.request import find_untrusted_proxy_address, read_client_ip_address
+
+logger = log.get_logger(__name__)
 
 REQUESTS_PER_WINDOW_PER_IP = 120
 {%- if include_accounts %}
@@ -48,6 +53,17 @@ def find_extra_budget(method: str, *, path: str) -> RequestBudget | None:
 class RateLimitRequestsMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
+        self.has_reported_untrusted_proxy = False
+
+    def report_untrusted_proxy_once(self, request: Request, *, resources: Resources) -> None:
+        if self.has_reported_untrusted_proxy:
+            return
+        untrusted_proxy_address = find_untrusted_proxy_address(
+            request, trusted_proxy_networks=resources.trusted_proxy_networks
+        )
+        if untrusted_proxy_address is not None:
+            self.has_reported_untrusted_proxy = True
+            log.emit(logger, event=ForwardedClientAddressIgnored(peer_ip_address=untrusted_proxy_address))
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:  # noqa: PLR0917  # ASGI interface
         if scope["type"] != "http" or scope["path"] in UNLIMITED_PATHS:
@@ -55,7 +71,8 @@ class RateLimitRequestsMiddleware:
             return
         request = Request(scope)
         resources = read_resources_of_scope(scope)
-        client_ip_address = read_client_ip_address(request, trusted_proxy_addresses=resources.trusted_proxy_addresses)
+        self.report_untrusted_proxy_once(request, resources=resources)
+        client_ip_address = read_client_ip_address(request, trusted_proxy_networks=resources.trusted_proxy_networks)
         retry_after_seconds = resources.rate_limiter.count_seconds_until_admitted(
             f"ip:{client_ip_address}", limit=REQUESTS_PER_WINDOW_PER_IP, window_seconds=WINDOW_SECONDS
         )

@@ -1,3 +1,5 @@
+import logging
+
 from app.shared.logging import LogEvent
 
 
@@ -18,3 +20,10 @@ class RequestHandled(LogEvent):
     route: str
     status_code: int
     duration_milliseconds: float
+
+
+class ForwardedClientAddressIgnored(LogEvent):
+    level = logging.WARNING
+    message = "X-Real-IP ignored: it came from a private peer that is not a trusted proxy"
+    operation = "client_ip_address"
+    peer_ip_address: str

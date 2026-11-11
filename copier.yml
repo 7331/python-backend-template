@@ -19,7 +19,10 @@ _message_after_copy: |
   {%- if include_accounts %}
     {{ environment_prefix }}_ACCOUNTS_PUBLIC_BASE_URL: the origin passkeys are bound to.
   {%- endif %}
-    {{ environment_prefix }}_TRUSTED_PROXY_ADDRESSES: the reverse proxy's fixed address, when one sits in front.
+    {{ environment_prefix }}_TRUSTED_PROXY_ADDRESSES: the reverse proxy's address or its network in CIDR form (a docker
+      network's subnet), when one sits in front.
+    {{ environment_prefix }}_ALLOWED_HOSTS: the public host names the API answers for{% if include_accounts %}, besides the
+      {{ environment_prefix }}_ACCOUNTS_PUBLIC_BASE_URL host and localhost{% else %}, besides localhost{% endif %}.
     REVERSE_PROXY_NETWORK: the reverse proxy's docker network, read only by deploy/deploy.sh.
   {%- if include_postgres %}
   Fill in .env.database-owner:

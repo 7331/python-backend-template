@@ -32,6 +32,10 @@ class ErrorParameters(ApiResponse):
     pass
 
 
+class RequestBodyLimitParameters(ErrorParameters):
+    maximum_bytes: int
+
+
 class ErrorBody(ApiResponse):
     code: str
     message: str

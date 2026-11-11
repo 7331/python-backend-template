@@ -1,6 +1,6 @@
 from typing import ClassVar
 
-from app.shared.schemas import ErrorDetail, ErrorParameters
+from app.shared.schemas import ErrorDetail, ErrorParameters, RequestBodyLimitParameters
 
 
 class AppError(Exception):
@@ -39,6 +39,20 @@ class MalformedBodyError(AppError):
 class RateLimitedError(AppError):
     code = "rate_limited"
     status_code = 429
+
+
+class HostNotAllowedError(AppError):
+    code = "host_not_allowed"
+    status_code = 400
+
+
+class RequestBodyTooLargeError(AppError):
+    code = "request_body_too_large"
+    status_code = 413
+    parameters_model = RequestBodyLimitParameters
+
+    def __init__(self, parameters: RequestBodyLimitParameters) -> None:
+        super().__init__(f"the request body is larger than {parameters.maximum_bytes} bytes", parameters=parameters)
 {%- if include_accounts %}
 
 
