@@ -30,6 +30,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            template/backend/pyproject.toml.jinja
+            template/e2e/pyproject.toml.jinja
       - name: Generate the app
         env:
           INCLUDE_POSTGRES: ${{ matrix.include_postgres }}
@@ -86,6 +91,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            template/backend/pyproject.toml.jinja
+            template/e2e/pyproject.toml.jinja
       - name: Set the git identity the generated app commits with
         run: |
           git config --global user.name template-check
@@ -120,6 +130,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            template/backend/pyproject.toml.jinja
+            template/e2e/pyproject.toml.jinja
       - name: Generate the app
         run: |
           git config --global user.name template-check
