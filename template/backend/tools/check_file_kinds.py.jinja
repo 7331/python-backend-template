@@ -1,0 +1,67 @@
+from pathlib import Path
+import sys
+
+BACKEND_DIRECTORY = Path(__file__).resolve().parents[1]
+DOMAIN_GROUP_DIRECTORY = BACKEND_DIRECTORY / "app" / "{{ root_package }}"
+INFRASTRUCTURE_GROUP_DIRECTORY = BACKEND_DIRECTORY / "app" / "infrastructure"
+DOMAIN_FILE_KINDS = frozenset(
+    {
+        "cli",
+        "configuration",
+        "dependencies",
+        "enums",
+        "errors",
+        "log_events",
+{%- if include_postgres %}
+        "models",
+        "repository",
+{%- endif %}
+        "router",
+        "schemas",
+        "service",
+        "sweeps",
+        "types",
+    }
+)
+INFRASTRUCTURE_FILE_KINDS = DOMAIN_FILE_KINDS | {"auth", "client", "store"}
+
+
+def is_file_of_kind(module_path: Path, *, allowed_kinds: frozenset[str]) -> bool:
+    return module_path.stem == "__init__" or any(
+        module_path.stem == kind or module_path.stem.endswith(f"_{kind}") for kind in allowed_kinds
+    )
+
+
+def list_group_problems(group_directory: Path, *, allowed_kinds: frozenset[str]) -> list[str]:
+    problems = [
+        f"{module_path.relative_to(BACKEND_DIRECTORY)} sits beside the packages: move it into the package it belongs to"
+        for module_path in sorted(group_directory.glob("*.py"))
+        if module_path.stem != "__init__"
+    ]
+    for package_directory in sorted(path for path in group_directory.iterdir() if (path / "__init__.py").exists()):
+        problems.extend(
+            f"{nested_directory.relative_to(BACKEND_DIRECTORY)} is a package inside a package: packages are flat siblings"
+            for nested_directory in sorted(path.parent for path in package_directory.glob("*/__init__.py"))
+        )
+        problems.extend(
+            f"{module_path.relative_to(BACKEND_DIRECTORY)} is not one of the file kinds "
+            f"({', '.join(sorted(allowed_kinds))}): name it <kind>.py or <feature>_<kind>.py"
+            for module_path in sorted(package_directory.glob("*.py"))
+            if not is_file_of_kind(module_path, allowed_kinds=allowed_kinds)
+        )
+    return problems
+
+
+def main() -> None:
+    problems = [
+        *list_group_problems(DOMAIN_GROUP_DIRECTORY, allowed_kinds=DOMAIN_FILE_KINDS),
+        *list_group_problems(INFRASTRUCTURE_GROUP_DIRECTORY, allowed_kinds=INFRASTRUCTURE_FILE_KINDS),
+    ]
+    for problem in problems:
+        print(problem)
+    print(f"file kinds: {len(problems)} problems")
+    sys.exit(1 if problems else 0)
+
+
+if __name__ == "__main__":
+    main()

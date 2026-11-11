@@ -2,7 +2,7 @@ rules:
   - id: typed-log-emission
     languages: [python]
     severity: ERROR
-    message: Emit a LogEvent through app.shared.logging (log.emit, log.emit_with_traceback, log.exception).
+    message: Emit a LogEvent through app.shared.logging (log.emit, log.emit_with_traceback, log.emit_with_current_traceback).
     paths:
       exclude:
         - "**/app/shared/logging.py"
@@ -11,7 +11,6 @@ rules:
       - metavariable-regex:
           metavariable: $METHOD
           regex: ^(debug|info|warning|warn|error|exception|critical|fatal|log|msg)$
-      - pattern-not: app.shared.logging.exception(...)
       - pattern-not: $TASK.exception()
 
   - id: typed-log-context

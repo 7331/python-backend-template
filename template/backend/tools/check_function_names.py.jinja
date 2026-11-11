@@ -1,0 +1,201 @@
+import ast
+from collections.abc import Iterator
+from pathlib import Path
+import re
+import sys
+
+BACKEND_DIRECTORY = Path(__file__).resolve().parents[1]
+SCANNED_DIRECTORIES = ("app", "tools"{% if include_postgres %}, "migrations"{% endif %})
+ROUTER_MODULE_STEM = re.compile(r"(.+_)?router")
+ALLOWED_VERBS = frozenset(
+    {
+        "add",
+        "apply",
+        "authenticate",
+        "build",
+        "check",
+        "close",
+        "collect",
+        "complete",
+        "configure",
+        "consume",
+        "count",
+        "create",
+        "delete",
+        "describe",
+        "document",
+        "downgrade",
+        "drop",
+        "dump",
+        "emit",
+        "find",
+        "forget",
+        "generate",
+        "get",
+        "handle",
+        "has",
+        "hash",
+        "import",
+        "insert",
+        "install",
+        "is",
+        "iterate",
+        "lift",
+        "list",
+        "load",
+        "locate",
+        "name",
+        "open",
+        "parse",
+        "pick",
+        "present",
+        "purge",
+        "read",
+        "receive",
+        "record",
+        "redact",
+        "reference",
+        "refuse",
+        "register",
+        "remove",
+        "render",
+        "report",
+        "require",
+        "resolve",
+        "run",
+        "send",
+        "serve",
+        "set",
+        "sign",
+        "skip",
+        "start",
+        "stop",
+        "store",
+        "strip",
+        "translate",
+        "update",
+        "upgrade",
+        "uppercase",
+        "validate",
+        "verify",
+        "wait",
+        "write",
+    }
+)
+EXEMPT_FUNCTION_NAMES = {
+    "main": "the entry point of a script under tools",
+    "on_session": "the documented classmethod that builds a service for one database session",
+}
+ATTRIBUTE_DECORATOR_NAMES = frozenset({"property", "cached_property", "setter"})
+
+
+def iterate_functions(
+    statements: list[ast.stmt], *, qualified_prefix: str
+) -> Iterator[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
+    for statement in statements:
+        if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+            qualified_name = f"{qualified_prefix}{statement.name}"
+            yield qualified_name, statement
+            yield from iterate_functions(statement.body, qualified_prefix=f"{qualified_name}.")
+        elif isinstance(statement, ast.ClassDef):
+            yield from iterate_functions(statement.body, qualified_prefix=f"{qualified_prefix}{statement.name}.")
+
+
+def find_expression_name(expression: ast.expr) -> str | None:
+    if isinstance(expression, ast.Subscript | ast.Call):
+        return find_expression_name(expression.value if isinstance(expression, ast.Subscript) else expression.func)
+    if isinstance(expression, ast.Name):
+        return expression.id
+    if isinstance(expression, ast.Attribute):
+        return expression.attr
+    return None
+
+
+def is_read_as_attribute(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return any(find_expression_name(decorator) in ATTRIBUTE_DECORATOR_NAMES for decorator in function.decorator_list)
+
+
+def list_union_members(annotation: ast.expr) -> list[ast.expr]:
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        return list_union_members(annotation.left) + list_union_members(annotation.right)
+    return [annotation]
+
+
+def is_none_annotation(annotation: ast.expr) -> bool:
+    return isinstance(annotation, ast.Constant) and annotation.value is None
+
+
+def is_variable_length_tuple_annotation(annotation: ast.expr) -> bool:
+    return (
+        isinstance(annotation, ast.Subscript)
+        and find_expression_name(annotation) == "tuple"
+        and isinstance(annotation.slice, ast.Tuple)
+        and len(annotation.slice.elts) == 2
+        and isinstance(annotation.slice.elts[1], ast.Constant)
+        and annotation.slice.elts[1].value is Ellipsis
+    )
+
+
+def is_list_annotation(annotation: ast.expr) -> bool:
+    return find_expression_name(annotation) in {"list", "Sequence"} or is_variable_length_tuple_annotation(annotation)
+
+
+def find_return_contract_problem(function: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    verb = function.name.split("_", maxsplit=1)[0]
+    members = [] if function.returns is None else list_union_members(function.returns)
+    has_none_member = any(is_none_annotation(member) for member in members)
+    if verb == "get" and (not members or has_none_member):
+        return "get_ returns one thing or raises, so its return type has no None; a lookup that can miss is find_"
+    if verb == "find" and (not has_none_member or len(members) < 2):
+        return "find_ returns one thing or None, so its return type is `<thing> | None`; a lookup that raises is get_"
+    if verb == "list" and (len(members) != 1 or not is_list_annotation(members[0])):
+        return "list_ returns a list, a Sequence or a tuple of any length"
+    if verb == "count" and (len(members) != 1 or find_expression_name(members[0]) != "int"):
+        return "count_ returns an int"
+    return None
+
+
+def find_verb_problem(function: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    first_word = function.name.split("_", maxsplit=1)[0]
+    if first_word in ALLOWED_VERBS:
+        return None
+    return (
+        f"starts with `{first_word}`, which is not a verb in ALLOWED_VERBS: name it verb plus object, "
+        "or add the verb to tools/check_function_names.py"
+    )
+
+
+def list_function_problems(module_path: Path) -> list[str]:
+    relative_path = module_path.relative_to(BACKEND_DIRECTORY)
+    module = ast.parse(module_path.read_text(encoding="utf-8"))
+    problems = []
+    for qualified_name, function in iterate_functions(module.body, qualified_prefix=""):
+        is_dunder = function.name.startswith("__") and function.name.endswith("__")
+        if is_dunder or function.name in EXEMPT_FUNCTION_NAMES or is_read_as_attribute(function):
+            continue
+        function_problems = [find_verb_problem(function)]
+        if not ROUTER_MODULE_STEM.fullmatch(module_path.stem):
+            function_problems.append(find_return_contract_problem(function))
+        problems.extend(
+            f"{relative_path}:{function.lineno} {qualified_name} {problem}"
+            for problem in function_problems
+            if problem is not None
+        )
+    return problems
+
+
+def main() -> None:
+    module_paths = sorted(
+        module_path
+        for scanned_directory in SCANNED_DIRECTORIES
+        for module_path in (BACKEND_DIRECTORY / scanned_directory).rglob("*.py")
+    )
+    problems = [problem for module_path in module_paths for problem in list_function_problems(module_path)]
+    for problem in problems:
+        print(problem)
+    print(f"function names: {len(module_paths)} modules, {len(problems)} problems")
+    sys.exit(1 if problems else 0)
+
+
+if __name__ == "__main__":
+    main()

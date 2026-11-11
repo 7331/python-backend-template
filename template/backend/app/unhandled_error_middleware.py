@@ -5,7 +5,7 @@ from app.shared import logging as log
 from app.shared.errors import AppError
 from app.shared.exception_handlers import build_app_error_response
 from app.shared.log_events import UnhandledError
-from app.shared.request import find_route_template
+from app.shared.request import read_route_template
 
 logger = log.get_logger(__name__)
 
@@ -31,5 +31,5 @@ class UnhandledErrorMiddleware:
         except Exception:
             if response_started:
                 raise
-            log.exception(logger, event=UnhandledError(route=find_route_template(Request(scope))))
+            log.emit_with_current_traceback(logger, event=UnhandledError(route=read_route_template(Request(scope))))
             await build_app_error_response(AppError("internal server error"))(scope, receive, send)

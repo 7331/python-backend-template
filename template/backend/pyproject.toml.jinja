@@ -55,7 +55,7 @@ module-root = ""
 [tool.ruff]
 line-length = 120
 target-version = "py315"
-extend-exclude = ["semgrep/tests", "vulture_whitelist.py"]
+extend-exclude = ["semgrep/tests", "ty_fixture", "vulture_whitelist.py"]
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -133,7 +133,7 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.ty.src]
-exclude = ["semgrep/tests", "vulture_whitelist.py"]
+exclude = ["semgrep/tests", "ty_fixture", "vulture_whitelist.py"]
 
 [tool.ty.environment]
 python-version = "3.15"
@@ -153,7 +153,7 @@ missing-override-decorator = "error"
 unused-ignore-comment = "warn"
 
 [tool.deptry]
-exclude = [".venv", "semgrep"{% if include_postgres %}, "migrations"{% endif %}]
+exclude = [".venv", "semgrep", "ty_fixture"{% if include_postgres %}, "migrations"{% endif %}]
 
 [tool.deptry.per_rule_ignores]
 DEP002 = [{% if include_postgres %}"psycopg", {% endif %}"uvloop"]

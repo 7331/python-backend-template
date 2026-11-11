@@ -167,7 +167,7 @@ class AccountService:
         return verified_registration
 
     async def create_sign_up_options(self, username: str) -> dict[str, JsonValue]:
-        if await self.repository.username_exists(username):
+        if await self.repository.is_username_taken(username):
             log.emit(logger, event=log_events.PasskeyCeremonyRefused(ceremony="sign_up", reason="username_taken"))
             raise UsernameTakenError("that username is taken; pick another")
         user_handle = secrets.token_bytes(USER_HANDLE_BYTES)

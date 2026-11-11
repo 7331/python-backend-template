@@ -6,7 +6,7 @@ from app.{{ root_package }}.accounts.router import accounts_router
 {% endif -%}
 from app.allowed_host_middleware import AllowedHostMiddleware
 from app.configuration import read_application_settings
-from app.lifespan.api_lifespan import api_lifespan
+from app.lifespan.api_lifespan import run_api_lifespan
 from app.openapi_contract import install_openapi_contract, name_operation_after_handler
 from app.rate_limit_middleware import RateLimitRequestsMiddleware
 from app.request_body_limit_middleware import RequestBodyLimitMiddleware
@@ -27,7 +27,7 @@ def create_app() -> FastAPI:
     configure_logging(application_settings.log_level)
     application = FastAPI(
         title=application_settings.service_name,
-        lifespan=api_lifespan,
+        lifespan=run_api_lifespan,
         docs_url=None,
         redoc_url=None,
         openapi_url=None,

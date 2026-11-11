@@ -57,7 +57,7 @@ def find_untrusted_proxy_address(
     return str(peer_address)
 
 
-def find_route_template(request: Request) -> str:
+def read_route_template(request: Request) -> str:
     route = request.scope.get("route")
     if route is not None:
         return route.path

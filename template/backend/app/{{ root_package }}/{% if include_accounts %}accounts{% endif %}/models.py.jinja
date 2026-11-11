@@ -5,7 +5,7 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.{{ root_package }}.accounts.enums import ChallengePurpose
-from app.infrastructure.postgres.base import Base, SurrogateId, Timestamps, build_postgres_enum
+from app.infrastructure.postgres.models import Base, SurrogateId, Timestamps, build_postgres_enum
 
 ACCOUNT_USERNAME_MAXIMUM_LENGTH = 32
 ACCOUNT_PUBLIC_ID_PREFIX = "acc_"

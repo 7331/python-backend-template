@@ -88,7 +88,7 @@ def run_house_rules() -> SemgrepReport:
     return SemgrepReport.model_validate_json(completed.stdout)
 
 
-def list_rule_ids() -> set[str]:
+def collect_rule_ids() -> set[str]:
     return {
         rule_id for rule_file in RULE_FILES for rule_id in RULE_ID.findall(Path(rule_file).read_text(encoding="utf-8"))
     }
@@ -97,7 +97,7 @@ def list_rule_ids() -> set[str]:
 def main() -> None:
     report = run_house_rules()
     silent_rule_ids = sorted(
-        list_rule_ids()
+        collect_rule_ids()
         - {finding.check_id.rsplit(".", maxsplit=1)[-1] for finding in report.results if finding.path == KNOWN_BAD_FIXTURE}
     )
     findings = [finding for finding in report.results if finding.path != KNOWN_BAD_FIXTURE]

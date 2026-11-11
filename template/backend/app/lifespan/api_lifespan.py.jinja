@@ -15,7 +15,7 @@ logger = log.get_logger(__name__)
 
 
 @asynccontextmanager
-async def api_lifespan(application: FastAPI) -> AsyncGenerator[ApiLifespanState]:
+async def run_api_lifespan(application: FastAPI) -> AsyncGenerator[ApiLifespanState]:
     del application
 {%- if include_accounts %}
     read_relying_party()
