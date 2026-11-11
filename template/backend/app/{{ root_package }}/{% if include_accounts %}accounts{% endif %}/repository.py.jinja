@@ -39,7 +39,7 @@ class AccountRepository:
     async def find_account(self, account_id: int) -> Account | None:
         return await self.session.get(Account, account_id)
 
-    async def username_exists(self, username: str) -> bool:
+    async def is_username_taken(self, username: str) -> bool:
         return await self.session.scalar(select(Account.id).where(Account.username == username)) is not None
 
     async def insert_passkey(self, account_passkey: AccountPasskey) -> AccountPasskey:

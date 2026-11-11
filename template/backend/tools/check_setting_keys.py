@@ -34,7 +34,7 @@ def list_setting_keys(settings_class: type[BaseSettings]) -> list[str]:
     ]
 
 
-def list_example_keys() -> set[str]:
+def collect_example_keys() -> set[str]:
     return {
         example_key
         for example_path in REPOSITORY_DIRECTORY.glob(".env*.example")
@@ -50,7 +50,7 @@ def main() -> None:
         if settings_class.__module__.startswith("app.")
         for setting_key in list_setting_keys(settings_class)
     }
-    missing_keys = sorted(setting_keys - list_example_keys())
+    missing_keys = sorted(setting_keys - collect_example_keys())
     for missing_key in missing_keys:
         print(f"{missing_key} is read by a settings class and is in no .env*.example file")
     print(f"setting keys: {len(setting_keys)} read, {len(missing_keys)} missing from the example env files")

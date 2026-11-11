@@ -5,7 +5,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.log_events import RequestHandled
 from app.shared import logging as log
-from app.shared.request import find_route_template
+from app.shared.request import read_route_template
 
 logger = log.get_logger(__name__)
 
@@ -27,7 +27,7 @@ class RequestLogMiddleware:
                     logger,
                     event=RequestHandled(
                         method=request.method,
-                        route=find_route_template(request),
+                        route=read_route_template(request),
                         status_code=message["status"],
                         duration_milliseconds=round((time.perf_counter() - started) * 1000, 1),
                     ),

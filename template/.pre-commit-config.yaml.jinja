@@ -58,6 +58,12 @@ repos:
         language: system
         pass_filenames: false
         files: ^backend/
+      - id: backend-type-rule-fixture
+        name: every ty rule set to error fires on the known-bad file
+        entry: uv run --directory backend python tools/check_type_rule_fixture.py
+        language: system
+        pass_filenames: false
+        files: ^backend/(pyproject\.toml|uv\.lock|ty_fixture/|tools/check_type_rule_fixture\.py)$
       - id: backend-house-rules
         name: semgrep house rules
         entry: uv run --directory backend python tools/run_house_rules.py
@@ -77,11 +83,23 @@ repos:
         pass_filenames: false
         files: ^backend/
       - id: backend-dead-code
-        name: vulture
-        entry: uv run --directory backend vulture
+        name: vulture, with response, log-event and column fields counted as used
+        entry: uv run --directory backend python tools/check_dead_code.py
         language: system
         pass_filenames: false
         files: ^backend/
+      - id: backend-function-names
+        name: function names start with a listed verb and return what the verb says
+        entry: uv run --directory backend python tools/check_function_names.py
+        language: system
+        pass_filenames: false
+        files: ^backend/.*\.py$
+      - id: backend-file-kinds
+        name: domain and infrastructure files are of a listed kind
+        entry: uv run --directory backend python tools/check_file_kinds.py
+        language: system
+        pass_filenames: false
+        files: ^backend/(app/|tools/check_file_kinds\.py$)
       - id: backend-setting-keys
         name: every setting key is in an example env file
         entry: uv run --directory backend python tools/check_setting_keys.py
@@ -138,7 +156,7 @@ repos:
         language: system
         require_serial: true
         files: \.(py|sh|ya?ml)$|(^|/)(Dockerfile|Caddyfile)$
-        exclude: ^(\.copier-answers\.yml$|backend/semgrep/tests/|backend/vulture_whitelist\.py$)
+        exclude: ^(\.copier-answers\.yml$|backend/semgrep/tests/|backend/ty_fixture/|backend/vulture_whitelist\.py$)
       - id: deploy-shell-scripts
         name: shellcheck (deploy)
         entry: uvx --from shellcheck-py==0.11.0.1 shellcheck

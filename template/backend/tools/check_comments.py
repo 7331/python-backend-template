@@ -49,7 +49,7 @@ class Comment(BaseModel):
 class CommentSyntax(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    find_comments: Callable[[str], list[Comment]]
+    list_comments: Callable[[str], list[Comment]]
     directive: re.Pattern[str]
 
 
@@ -58,12 +58,12 @@ def locate_comment(text: str, *, start: int, end: int) -> Comment:
     return Comment(line_number=text.count("\n", 0, start) + 1, column=start - line_start, text=text[start:end])
 
 
-def find_line_end(text: str, *, start: int) -> int:
+def locate_line_end(text: str, *, start: int) -> int:
     line_end = text.find("\n", start)
     return len(text) if line_end < 0 else line_end
 
 
-def find_python_comments(text: str) -> list[Comment]:
+def list_python_comments(text: str) -> list[Comment]:
     return [
         Comment(line_number=token.start[0], column=token.start[1], text=token.string)
         for token in tokenize.generate_tokens(io.StringIO(text).readline)
@@ -71,7 +71,7 @@ def find_python_comments(text: str) -> list[Comment]:
     ]
 
 
-def find_docstrings(text: str) -> list[Comment]:
+def list_docstrings(text: str) -> list[Comment]:
     return [
         Comment(line_number=node.body[0].lineno, column=node.body[0].col_offset, text=docstring)
         for node in ast.walk(ast.parse(text))
@@ -83,7 +83,7 @@ def find_docstrings(text: str) -> list[Comment]:
 def skip_heredoc_body(text: str, *, start: int, terminator: str, strips_tabs: bool) -> int:
     cursor = start
     while cursor < len(text):
-        line_end = find_line_end(text, start=cursor)
+        line_end = locate_line_end(text, start=cursor)
         line = text[cursor:line_end]
         cursor = min(line_end + 1, len(text))
         if (line.lstrip("\t") if strips_tabs else line) == terminator:
@@ -91,7 +91,7 @@ def skip_heredoc_body(text: str, *, start: int, terminator: str, strips_tabs: bo
     return cursor
 
 
-def find_shell_comments(text: str) -> list[Comment]:
+def list_shell_comments(text: str) -> list[Comment]:
     comments: list[Comment] = []
     pending_heredocs: list[re.Match[str]] = []
     open_quote = ""
@@ -123,7 +123,7 @@ def find_shell_comments(text: str) -> list[Comment]:
             and (cursor == 0 or text[cursor - 1] in SHELL_COMMENT_BOUNDARIES)
             and not text.startswith("${", max(0, cursor - 2))
         ):
-            line_end = find_line_end(text, start=cursor)
+            line_end = locate_line_end(text, start=cursor)
             comments.append(locate_comment(text, start=cursor, end=line_end))
             cursor = line_end
         else:
@@ -149,7 +149,7 @@ def find_yaml_comment_column(line: str) -> int | None:
     return None
 
 
-def find_yaml_comments(text: str) -> list[Comment]:
+def list_yaml_comments(text: str) -> list[Comment]:
     comments: list[Comment] = []
     block_scalar_indentation: int | None = None
     for line_number, line in enumerate(text.split("\n"), start=1):
@@ -166,7 +166,7 @@ def find_yaml_comments(text: str) -> list[Comment]:
     return comments
 
 
-def find_dockerfile_comments(text: str) -> list[Comment]:
+def list_dockerfile_comments(text: str) -> list[Comment]:
     return [
         Comment(line_number=line_number, column=len(line) - len(line.lstrip()), text=line.strip())
         for line_number, line in enumerate(text.split("\n"), start=1)
@@ -174,7 +174,7 @@ def find_dockerfile_comments(text: str) -> list[Comment]:
     ]
 
 
-def find_caddyfile_comments(text: str) -> list[Comment]:
+def list_caddyfile_comments(text: str) -> list[Comment]:
     comments: list[Comment] = []
     open_quote = ""
     cursor = 0
@@ -187,7 +187,7 @@ def find_caddyfile_comments(text: str) -> list[Comment]:
             open_quote = character
             cursor += 1
         elif character == "#" and (cursor == 0 or text[cursor - 1] in CADDYFILE_COMMENT_BOUNDARIES):
-            line_end = find_line_end(text, start=cursor)
+            line_end = locate_line_end(text, start=cursor)
             comments.append(locate_comment(text, start=cursor, end=line_end))
             cursor = line_end
         else:
@@ -195,11 +195,11 @@ def find_caddyfile_comments(text: str) -> list[Comment]:
     return comments
 
 
-PYTHON_SYNTAX = CommentSyntax(find_comments=find_python_comments, directive=PYTHON_DIRECTIVE)
-SHELL_SYNTAX = CommentSyntax(find_comments=find_shell_comments, directive=SHELL_DIRECTIVE)
-YAML_SYNTAX = CommentSyntax(find_comments=find_yaml_comments, directive=YAML_DIRECTIVE)
-DOCKERFILE_SYNTAX = CommentSyntax(find_comments=find_dockerfile_comments, directive=DOCKERFILE_DIRECTIVE)
-CADDYFILE_SYNTAX = CommentSyntax(find_comments=find_caddyfile_comments, directive=NO_DIRECTIVE)
+PYTHON_SYNTAX = CommentSyntax(list_comments=list_python_comments, directive=PYTHON_DIRECTIVE)
+SHELL_SYNTAX = CommentSyntax(list_comments=list_shell_comments, directive=SHELL_DIRECTIVE)
+YAML_SYNTAX = CommentSyntax(list_comments=list_yaml_comments, directive=YAML_DIRECTIVE)
+DOCKERFILE_SYNTAX = CommentSyntax(list_comments=list_dockerfile_comments, directive=DOCKERFILE_DIRECTIVE)
+CADDYFILE_SYNTAX = CommentSyntax(list_comments=list_caddyfile_comments, directive=NO_DIRECTIVE)
 SYNTAX_BY_SUFFIX = {
     ".py": PYTHON_SYNTAX,
     ".sh": SHELL_SYNTAX,
@@ -222,18 +222,18 @@ def is_kept(comment: Comment, *, directive: re.Pattern[str]) -> bool:
     return any(pattern.search(comment.text) for pattern in (directive, UPSTREAM_BUG_LINK, LICENSE_LINE))
 
 
-def find_refused_comments(path: Path) -> list[Comment]:
+def list_refused_comments(path: Path) -> list[Comment]:
     comment_syntax = pick_comment_syntax(path)
     if comment_syntax is None:
         return []
     text = path.read_text(encoding="utf-8")
     refused_comments = [
         comment
-        for comment in comment_syntax.find_comments(text)
+        for comment in comment_syntax.list_comments(text)
         if not is_kept(comment, directive=comment_syntax.directive)
     ]
     if path.suffix == ".py":
-        refused_comments.extend(find_docstrings(text))
+        refused_comments.extend(list_docstrings(text))
     return refused_comments
 
 
@@ -243,7 +243,7 @@ def main() -> None:
         f"{path}:{comment.line_number}: {comment.text.splitlines()[0][:SHOWN_TEXT_LENGTH]}"
         for path in paths
         if path.is_file()
-        for comment in find_refused_comments(path)
+        for comment in list_refused_comments(path)
     ]
     for finding in findings:
         print(finding)

@@ -13,7 +13,7 @@ def list_heads() -> list[str]:
     return sorted(ScriptDirectory.from_config(Config(str(BACKEND_DIRECTORY / "alembic.ini"))).get_heads())
 
 
-def downgrade_raises(revision_path: Path) -> bool:
+def has_raising_downgrade(revision_path: Path) -> bool:
     return any(
         isinstance(node, ast.FunctionDef)
         and node.name == "downgrade"
@@ -28,7 +28,7 @@ def main() -> None:
     problems = [
         f"{revision_path.name}: downgrade() must raise, because migrations are forward only"
         for revision_path in revision_paths
-        if not downgrade_raises(revision_path)
+        if not has_raising_downgrade(revision_path)
     ]
     if len(heads) != 1:
         problems.append(f"the history must have exactly one head, found {len(heads)}: {', '.join(heads)}")
