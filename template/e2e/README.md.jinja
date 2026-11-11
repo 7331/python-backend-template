@@ -1,12 +1,14 @@
 # e2e
 
-End-to-end flows against a real compose stack, run by hand when a change needs them. `ARCHITECTURE.md` (Verification)
-has the full rules.
+End-to-end flows against a real compose stack, run by hand when a change needs them. These are the rules for a flow.
+`BACKEND-API.md` (Verification) says when one is due.
 
-- One flow is one user journey through the public HTTP surface, named `<journey>_flow.py`. No file per endpoint or
-  query, and no SQL fixtures.
-- State comes in through the API. Assertions go through the API too. A read-only `psql` check is allowed only for an
-  invariant the API can't show.
+- One flow is one user journey through the public HTTP surface, start to finish, named `<journey>_flow.py`. No file
+  per endpoint, operation or query, and no SQL fixtures: they pin the schema and the implementation, so every migration
+  breaks them. An upsert, for example, is checked inside the journey that submits twice.
+- State comes in through the API, never through SQL inserts. Assertions go through the API too. A `psql` check through
+  `docker compose exec`, in a read-only transaction, is allowed only for an invariant the API can't show, such as a row
+  really deleted or a role lacking a privilege.
 - Shared code lives in modules named by concern (`stack_commands.py`, `http_client.py`, `flow_report.py`{% if include_accounts %},
   `software_passkey.py`{% endif %}), never copied between flows.
 - Each flow starts its own stack under a separate compose project with {% if include_postgres %}fresh passwords for both
