@@ -108,7 +108,7 @@ repos:
         files: ^(backend/app/|\.env.*\.example$)
 {%- if include_postgres %}
       - id: backend-migrations
-        name: migrations have one head and no downgrade
+        name: every migration line has one head and no downgrade
         entry: uv run --directory backend python tools/check_migrations.py
         language: system
         pass_filenames: false

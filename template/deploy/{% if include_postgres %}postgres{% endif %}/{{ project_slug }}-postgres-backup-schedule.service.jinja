@@ -1,0 +1,17 @@
+[Unit]
+Description={{ project_slug }} Postgres base backups and restore drills
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=exec
+Environment={{ environment_prefix }}_ENVIRONMENT_FILE=/etc/{{ project_slug }}/deploy.env
+Environment={{ environment_prefix }}_DATABASE_OWNER_ENVIRONMENT_FILE=/etc/{{ project_slug }}/database-owner.env
+Environment={{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE=/etc/{{ project_slug }}/postgres-backup.env
+ExecStart=/opt/{{ project_slug }}/deploy/postgres/run_postgres_backup_schedule.sh
+Restart=on-failure
+RestartSec=60
+SyslogIdentifier={{ project_slug }}-postgres-backup-schedule
+
+[Install]
+WantedBy=multi-user.target
