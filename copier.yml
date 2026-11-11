@@ -32,7 +32,7 @@ _message_after_copy: |
   For production, copy deploy/postgres/backup.env.example outside the checkout with mode 600 and fill in the bucket
   and a new WAL-G key.
   {%- endif %}
-  Then run docker compose up -d --build --wait and follow the first-push steps in README.md.
+  Then run docker compose up -d --build --wait and commit everything, uv.lock files included.
 
 project_slug:
   type: str

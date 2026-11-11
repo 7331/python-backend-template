@@ -1,7 +1,7 @@
 # {{ project_slug }}
 
 {{ project_description }}. Made from [python-backend-template](https://github.com/7331/python-backend-template).
-`BACKEND-API.md` holds the rules the code follows, and `AGENTS.md` holds the rules for agents and pull requests.
+`BACKEND-API.md` holds the rules the code follows, and `AGENTS.md` the rules for agents and pull requests.
 
 ## Run it
 
@@ -14,18 +14,8 @@ docker compose up -d --build --wait
 curl http://127.0.0.1:8000/health
 ```
 
-For day-to-day work, `BACKEND-API.md` (Local development) has two loops that need no image rebuild: compose watch,
-and the backend on the host with `serve-api --reload`.
-
-## Env files
-
-- `.env` is read by the API. Fill in every key that `.env.example` leaves empty.
-{%- if include_postgres %}
-- `.env.database-owner` holds the Postgres superuser password. Only the `postgres` and `migrate` containers read it.
-- `deploy/postgres/backup.env.example` lists the WAL-G backup keys for production.
-{%- endif %}
-
-None of them is committed. Production keeps them outside the checkout with mode 600.
+Fill in every key the example env files leave empty. None of them is committed. For day-to-day work without an image
+rebuild, see Local development in `BACKEND-API.md`.
 
 ## Checks
 
@@ -33,70 +23,12 @@ None of them is committed. Production keeps them outside the checkout with mode 
 uvx prek run --stage pre-push --all-files
 ```
 
-That runs every gate, and `.github/workflows/ci.yml` runs the same command on every pull request and on `main`. Git
-runs the fast gates on commit, the rest on push, and checks the commit subject against the PR title rule. The e2e
-flows in `e2e/` run by hand when a change needs one and are never a CI or hook gate.
-
-## First push
-
-Run these once, in this order. The ruleset comes last because it refuses a direct push to `main`.
-
-1. Commit and push `main`:
-
-   ```sh
-   git add --all
-   git commit --message "chore: start from python-backend-template"
-   gh repo create {{ project_slug }} --private --source . --push
-   ```
-
-2. Create the labels. An issue form's label that does not exist is not applied, and GitHub says nothing.
-
-   ```sh
-   gh label create bug --force --color d73a4a --description "Something doesn't work as intended"
-   gh label create enhancement --force --color a2eeef --description "New behaviour, or a refactor, cleanup, tooling, docs or performance change"
-   gh label create question --force --color d876e3 --description "Needs an owner decision before work starts"
-   gh label create idea --force --color c5def5 --description "Kept for later, not work yet"
-   gh label create parked --force --color ededed --description "Skipped for now by the owner, to be picked up later"
-   gh label create security --force --color b60205 --description "Touches authentication, keys, encryption or privacy"
-   gh label create priority:urgent --force --color b60205 --description "Users blocked, or data or security at risk now: drop everything"
-   gh label create priority:high --force --color d93f0b --description "A broken flow with no workaround: next up"
-   gh label create priority:low --force --color c2e0c6 --description "Polish, fine if it never happens"
-   ```
-
-3. Allow only squash merges, and turn on auto-merge and branch deletion on merge:
-
-   ```sh
-   gh api --method PATCH "repos/{owner}/{repo}" \
-     --field allow_squash_merge=true --field allow_merge_commit=false --field allow_rebase_merge=false \
-     --field allow_auto_merge=true --field delete_branch_on_merge=true \
-     --field squash_merge_commit_title=PR_TITLE --field squash_merge_commit_message=PR_BODY
-   ```
-
-4. Turn on Dependabot alerts and security updates. They read `uv.lock` and open a pull request the day an advisory
-   lands. `.github/dependabot.yml` covers the monthly version updates.
-
-   ```sh
-   gh api --method PUT "repos/{owner}/{repo}/vulnerability-alerts"
-   gh api --method PUT "repos/{owner}/{repo}/automated-security-fixes"
-   ```
-
-5. Protect `main`: no deletion, no force push, a pull request for every change, the `Check` and `Conventional title`
-   checks on a branch that is up to date, squash only.
-
-   ```sh
-   gh api --method POST "repos/{owner}/{repo}/rulesets" --input .github/rulesets/main.json
-   ```
-
-CI runs on GitHub's `ubuntu-latest`. To move it to a self-hosted runner, set the repository variable `CI_RUNNER` to
-the runner's labels as JSON: `gh variable set CI_RUNNER --body '["self-hosted","<label>"]'`.
-
-`.github/workflows/image-scan.yml` builds the backend image every Monday and fails on a fixable HIGH or CRITICAL
-vulnerability. When an OS package is the cause, move `APT_EPOCH` in `backend/Dockerfile` to today's date so the next
-build upgrades it. It is the only scheduled workflow. Delete the file to stop it.
+CI runs the same command, on `ubuntu-latest` unless the repository variable `CI_RUNNER` names other runner labels as
+JSON. The e2e flows in `e2e/` run by hand when a change needs one.
 
 ## Deploy
 
-On the host, with the env files outside the checkout:
+On the host, with the env files outside the checkout and mode 600:
 
 ```sh
 export {{ environment_prefix }}_ENVIRONMENT_FILE=<deploy .env>
@@ -106,10 +38,9 @@ export {{ environment_prefix }}_POSTGRES_BACKUP_ENVIRONMENT_FILE=<backup env fil
 {%- endif %}
 deploy/deploy.sh
 ```
-
-It builds the image from the checkout, starts the stack behind the reverse proxy{% if include_postgres %}, and takes a base backup{% endif %}.
 {%- if include_postgres %}
-Once per host, install the backup schedule's systemd unit (`BACKEND-API.md`, Backup schedule). Until it runs,
+
+Once per host, install the backup schedule's systemd unit (Backup schedule in `BACKEND-API.md`). Until it runs,
 `deploy/deploy.sh` deploys, warns and exits 1.
 {%- endif %}
 
@@ -119,6 +50,5 @@ Once per host, install the backup schedule's systemd unit (`BACKEND-API.md`, Bac
 uvx copier update --trust
 ```
 
-The tree must be clean. Copier applies what changed in the template since the version in `.copier-answers.yml` and
-leaves conflicts as inline markers. It never overwrites this file or `AGENTS.md`. Each
+The tree must be clean. It never overwrites this file or `AGENTS.md`. Each
 [release](https://github.com/7331/python-backend-template/releases) lists the steps an update needs by hand.
