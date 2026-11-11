@@ -1,15 +1,20 @@
+from pathlib import Path
+import re
 import resource
 import subprocess
 import sys
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+RULE_FILES = ("semgrep/house-rules.yaml", "semgrep/naming-rules.yaml")
+KNOWN_BAD_FIXTURE = "semgrep/tests/known_bad.py"
+KNOWN_GOOD_FIXTURE = "semgrep/tests/known_good.py"
+RULE_ID = re.compile(r"^  - id: (\S+)$", re.MULTILINE)
 SEMGREP_COMMAND = (
     "uvx",
     "semgrep==1.183.0",
     "scan",
-    "--config",
-    "semgrep/house-rules.yaml",
+    *(argument for rule_file in RULE_FILES for argument in ("--config", rule_file)),
     "--metrics=off",
     "--strict",
     "--quiet",
@@ -20,6 +25,9 @@ SEMGREP_COMMAND = (
 {%- if include_postgres %}
     "migrations",
 {%- endif %}
+    "tools",
+    KNOWN_BAD_FIXTURE,
+    KNOWN_GOOD_FIXTURE,
 )
 SEMGREP_TIMEOUT_SECONDS = 600
 MESSAGE_PREVIEW_LENGTH = 200
@@ -80,9 +88,20 @@ def run_house_rules() -> SemgrepReport:
     return SemgrepReport.model_validate_json(completed.stdout)
 
 
+def list_rule_ids() -> set[str]:
+    return {
+        rule_id for rule_file in RULE_FILES for rule_id in RULE_ID.findall(Path(rule_file).read_text(encoding="utf-8"))
+    }
+
+
 def main() -> None:
     report = run_house_rules()
-    for finding in report.results:
+    silent_rule_ids = sorted(
+        list_rule_ids()
+        - {finding.check_id.rsplit(".", maxsplit=1)[-1] for finding in report.results if finding.path == KNOWN_BAD_FIXTURE}
+    )
+    findings = [finding for finding in report.results if finding.path != KNOWN_BAD_FIXTURE]
+    for finding in findings:
         print(
             f"{finding.path}:{finding.start.line} {finding.check_id}: {finding.extra.message[:MESSAGE_PREVIEW_LENGTH]}"
         )
@@ -90,8 +109,12 @@ def main() -> None:
         print(
             f"semgrep {str(error.error_type)[:MESSAGE_PREVIEW_LENGTH]} {error.path}: {str(error.message)[:MESSAGE_PREVIEW_LENGTH]}"
         )
-    print(f"house rules: {len(report.results)} findings, {len(report.errors)} errors")
-    sys.exit(1 if report.results or report.errors else 0)
+    for silent_rule_id in silent_rule_ids:
+        print(f"{silent_rule_id} finds nothing in {KNOWN_BAD_FIXTURE}: the rule no longer matches, or has no violation there")
+    print(
+        f"house rules: {len(findings)} findings, {len(report.errors)} errors, {len(silent_rule_ids)} rules silent on the known-bad file"
+    )
+    sys.exit(1 if findings or report.errors or silent_rule_ids else 0)
 
 
 if __name__ == "__main__":

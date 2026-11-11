@@ -1,9 +1,39 @@
 default_install_hook_types: [pre-commit, pre-push, commit-msg]
-default_stages: [pre-commit, pre-push, manual]
+default_stages: [pre-push, manual]
 
 repos:
+  - repo: builtin
+    hooks:
+      - id: check-merge-conflict
+        args: [--assume-in-merge]
+        stages: [pre-commit, pre-push, manual]
   - repo: local
     hooks:
+      - id: lint-fix
+        name: ruff check --fix (changed files)
+        entry: uv run --project backend ruff check --fix --force-exclude
+        language: system
+        files: ^(backend|e2e)/
+        types: [python]
+        require_serial: true
+        stages: [pre-commit]
+      - id: format-fix
+        name: ruff format (changed files)
+        entry: uv run --project backend ruff format --force-exclude
+        language: system
+        files: ^(backend|e2e)/
+        types: [python]
+        require_serial: true
+        stages: [pre-commit]
+      - id: gitleaks-staged
+        name: gitleaks (staged changes)
+        entry: gitleaks git --pre-commit --staged --redact --verbose --no-banner
+        language: golang
+        language_version: 1.25.4
+        additional_dependencies: [github.com/zricethezav/gitleaks/v8@v8.30.1]
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
       - id: backend-sync
         name: backend dependencies (locked)
         entry: uv sync --locked --quiet --project backend
@@ -46,6 +76,26 @@ repos:
         language: system
         pass_filenames: false
         files: ^backend/
+      - id: backend-dead-code
+        name: vulture
+        entry: uv run --directory backend vulture
+        language: system
+        pass_filenames: false
+        files: ^backend/
+      - id: backend-setting-keys
+        name: every setting key is in an example env file
+        entry: uv run --directory backend python tools/check_setting_keys.py
+        language: system
+        pass_filenames: false
+        files: ^(backend/app/|\.env.*\.example$)
+{%- if include_postgres %}
+      - id: backend-migrations
+        name: migrations have one head and no downgrade
+        entry: uv run --directory backend python tools/check_migrations.py
+        language: system
+        pass_filenames: false
+        files: ^backend/(migrations/|alembic\.ini$)
+{%- endif %}
       - id: backend-openapi-current
         name: OpenAPI document is current and valid
         entry: bash -c 'set -euo pipefail; uv run --project backend python backend/tools/dump_openapi.py backend/openapi.json; uvx openapi-spec-validator==0.9.0 --schema 3.1 backend/openapi.json'
@@ -58,7 +108,6 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
-        stages: [pre-push, manual]
       - id: e2e-sync
         name: e2e dependencies (locked)
         entry: uv sync --locked --quiet --project e2e
@@ -83,6 +132,18 @@ repos:
         language: system
         pass_filenames: false
         files: ^e2e/
+      - id: comments
+        name: no comments or docstrings outside the kept kinds
+        entry: uv run --project backend python backend/tools/check_comments.py
+        language: system
+        require_serial: true
+        files: \.(py|sh|ya?ml)$|(^|/)(Dockerfile|Caddyfile)$
+        exclude: ^(\.copier-answers\.yml$|backend/semgrep/tests/|backend/vulture_whitelist\.py$)
+      - id: deploy-shell-scripts
+        name: shellcheck (deploy)
+        entry: uvx --from shellcheck-py==0.11.0.1 shellcheck
+        language: system
+        files: ^deploy/.*\.sh$
       - id: gitleaks
         name: gitleaks (git history)
         entry: gitleaks git --redact --verbose --no-banner

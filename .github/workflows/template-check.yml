@@ -57,6 +57,7 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: |
           cd "${OPTION_SET}"
+          uvx prek run --stage pre-commit --all-files
           uvx prek run --stage pre-push --all-files
       - name: Audit the generated app's workflows and Dependabot config
         env:

@@ -1,0 +1,37 @@
+rules:
+  - id: names-are-whole-words
+    languages: [python]
+    severity: ERROR
+    message: "`$NAME` holds an abbreviation. Spell the word out: configuration, request, response, error, message, index."
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: |
+                      def $FUNCTION(..., $NAME, ...): ...
+                  - pattern: |
+                      def $FUNCTION(..., $NAME: $TYPE, ...): ...
+                  - pattern: |
+                      def $FUNCTION(..., $NAME: $TYPE = $DEFAULT, ...): ...
+                  - pattern: |
+                      def $FUNCTION(..., $NAME = $DEFAULT, ...): ...
+              - focus-metavariable: $NAME
+          - pattern: |
+              def $NAME(...): ...
+          - pattern: $NAME = $VALUE
+          - pattern: |
+              for $NAME in $ITERABLE: ...
+          - pattern: |
+              with $CONTEXT as $NAME: ...
+          - pattern: |
+              try: ...
+              except $ERROR_TYPE as $NAME: ...
+          - patterns:
+              - pattern-inside: |
+                  class $CLASS(...): ...
+              - pattern-either:
+                  - pattern: "$NAME: $TYPE"
+                  - pattern: "$NAME: $TYPE = $DEFAULT"
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)^(?!.*__$)_*(?:[a-z0-9]+_)*(?:args|b64|buf|cb|cfg|conf|ctx|db|dst|e|err|ev|evt|exc|fn|i|idx|ms|msg|opts|params|prev|req|res|resp|rx|seq|sha|src|stmt|tx)(?:_[a-z0-9]+)*$
