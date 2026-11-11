@@ -53,6 +53,13 @@ class RequestBodyTooLargeError(AppError):
 
     def __init__(self, parameters: RequestBodyLimitParameters) -> None:
         super().__init__(f"the request body is larger than {parameters.maximum_bytes} bytes", parameters=parameters)
+{%- if include_postgres %}
+
+
+class NotReadyError(AppError):
+    code = "not_ready"
+    status_code = 503
+{%- endif %}
 {%- if include_accounts %}
 
 
