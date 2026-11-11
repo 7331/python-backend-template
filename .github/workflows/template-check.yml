@@ -54,6 +54,109 @@ jobs:
           cd "${OPTION_SET}"
           uvx prek run --all-files
 
+  update-from-latest-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - option_set: no-postgres
+            include_postgres: "false"
+            include_accounts: "false"
+          - option_set: postgres
+            include_postgres: "true"
+            include_accounts: "false"
+          - option_set: postgres-accounts
+            include_postgres: "true"
+            include_accounts: "true"
+    env:
+      INCLUDE_POSTGRES: ${{ matrix.include_postgres }}
+      INCLUDE_ACCOUNTS: ${{ matrix.include_accounts }}
+      OPTION_SET: ${{ matrix.option_set }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+      - name: Set the git identity the generated app commits with
+        run: |
+          git config --global user.name template-check
+          git config --global user.email template-check@example.invalid
+          git config --global init.defaultBranch main
+      - name: Update an untouched app from the newest release tag and run every gate
+        run: |
+          .github/template-check/check_update_from_latest_release.sh \
+            "${RUNNER_TEMP}/update-${OPTION_SET}-untouched" untouched
+      - name: Update an app that added a setting key and a route, and run every gate
+        run: |
+          .github/template-check/check_update_from_latest_release.sh \
+            "${RUNNER_TEMP}/update-${OPTION_SET}-changed" changed
+
+  generated-app-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - option_set: postgres
+            include_accounts: "false"
+          - option_set: postgres-accounts
+            include_accounts: "true"
+    env:
+      INCLUDE_ACCOUNTS: ${{ matrix.include_accounts }}
+      OPTION_SET: ${{ matrix.option_set }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+      - name: Generate the app
+        run: |
+          git config --global user.name template-check
+          git config --global user.email template-check@example.invalid
+          git config --global init.defaultBranch main
+          uvx copier copy --trust --defaults --vcs-ref HEAD \
+            --data project_slug=sample-app \
+            --data include_postgres=true \
+            --data "include_accounts=${INCLUDE_ACCOUNTS}" \
+            . "${RUNNER_TEMP}/boot-${OPTION_SET}"
+      - name: Write the env files
+        working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}
+        run: |
+          cp .env.example .env
+          cp .env.database-owner.example .env.database-owner
+          chmod 600 .env .env.database-owner
+          sed --in-place "s/^SAMPLE_APPLICATION_DATABASE_PASSWORD=$/&$(openssl rand -hex 24)/" .env
+          sed --in-place "s/^POSTGRES_PASSWORD=$/&$(openssl rand -hex 24)/" .env.database-owner
+          grep --quiet --extended-regexp '^SAMPLE_APPLICATION_DATABASE_PASSWORD=[0-9a-f]{48}$' .env
+          grep --quiet --extended-regexp '^POSTGRES_PASSWORD=[0-9a-f]{48}$' .env.database-owner
+      - name: Build the image and start the stack
+        working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}
+        run: docker compose up --detach --build --wait --wait-timeout 300
+      - name: Read /health
+        run: curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8000/health
+      - name: Run the health flow
+        working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}/e2e
+        run: uv run --locked python health_flow.py
+      - name: Run the accounts flow
+        if: ${{ matrix.include_accounts == 'true' }}
+        working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}/e2e
+        run: uv run --locked python accounts_flow.py
+      - name: Print container logs
+        if: ${{ failure() }}
+        working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}
+        run: |
+          docker compose ps --all
+          docker compose logs --no-color --timestamps
+      - name: Remove the stack and its volumes
+        if: ${{ always() }}
+        working-directory: ${{ runner.temp }}/boot-${{ matrix.option_set }}
+        run: docker compose down --volumes --remove-orphans
+
   workflow-audit:
     runs-on: ubuntu-latest
     steps:
