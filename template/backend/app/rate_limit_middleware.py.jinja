@@ -20,7 +20,7 @@ REQUESTS_PER_WINDOW_PER_IP = 120
 PASSKEY_WRITES_PER_WINDOW_PER_IP = 10
 {%- endif %}
 WINDOW_SECONDS = 60
-UNLIMITED_PATHS = frozenset({"/health"})
+UNLIMITED_PATHS = frozenset({"/health", "/ready"})
 {%- if include_accounts %}
 PASSKEY_WRITE_PREFIX = f"{API_PREFIX}/accounts/passkey/"
 {%- endif %}

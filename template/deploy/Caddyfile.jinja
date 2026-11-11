@@ -5,5 +5,7 @@
 	}
 	reverse_proxy {{ project_slug }}-api:8000 {
 		header_up X-Real-IP {client_ip}
+		lb_try_duration 30s
+		lb_try_interval 250ms
 	}
 }

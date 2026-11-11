@@ -7,6 +7,9 @@ from app.{{ root_package }}.accounts.router import accounts_router
 from app.allowed_host_middleware import AllowedHostMiddleware
 from app.configuration import read_application_settings
 from app.lifespan.api_lifespan import run_api_lifespan
+{%- if include_postgres %}
+from app.lifespan.dependencies import ResourcesDependency
+{%- endif %}
 from app.openapi_contract import install_openapi_contract, name_operation_after_handler
 from app.rate_limit_middleware import RateLimitRequestsMiddleware
 from app.request_body_limit_middleware import RequestBodyLimitMiddleware
@@ -20,6 +23,13 @@ from app.unhandled_error_middleware import UnhandledErrorMiddleware
 
 async def read_health() -> HealthResponse:
     return HealthResponse(status="ok")
+{%- if include_postgres %}
+
+
+async def read_readiness(resources: ResourcesDependency) -> HealthResponse:
+    await resources.database.refuse_unreachable_database()
+    return HealthResponse(status="ok")
+{%- endif %}
 
 
 def create_app() -> FastAPI:
@@ -33,6 +43,11 @@ def create_app() -> FastAPI:
         openapi_url=None,
         generate_unique_id_function=name_operation_after_handler,
     )
+{%- if include_postgres %}
+    application.add_api_route("/ready", read_readiness, methods=["GET", "HEAD"], include_in_schema=False)
+{%- else %}
+    application.add_api_route("/ready", read_health, methods=["GET", "HEAD"], include_in_schema=False)
+{%- endif %}
     application.add_api_route("/health", read_health, methods=["GET", "HEAD"], include_in_schema=False)
 {%- if include_accounts %}
     application.include_router(accounts_router)
