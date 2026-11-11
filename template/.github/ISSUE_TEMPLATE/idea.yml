@@ -1,0 +1,22 @@
+name: Idea
+description: Keep it for later. Not work yet.
+labels: [idea, parked]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        An idea is not work until someone can say what done looks like. Close as not planned with a one-line reason.
+  - type: textarea
+    id: what
+    attributes:
+      label: What it is
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+  - type: input
+    id: who
+    attributes:
+      label: Who asked

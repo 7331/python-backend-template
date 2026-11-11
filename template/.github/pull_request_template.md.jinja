@@ -1,0 +1,28 @@
+<!-- Title: `type(scope): sentence` saying what changes. It becomes the squash commit's subject. -->
+
+## What and why
+
+A few lines. Name the shortcomings of the approach too.
+
+## Verified
+
+What ran and what it showed: the gates (`uvx prek run --stage pre-push --all-files`), an e2e flow, a request against the running stack.
+
+- [ ] `backend/openapi.json` is current: the OpenAPI hook passed and left no diff.
+{%- if include_postgres %}
+- [ ] A revision that drops or rewrites data does so on purpose. Migrations only go forward, and a mistake is fixed by the next revision.
+{%- endif %}
+
+## Not run
+
+What was not checked, and why.
+
+## Flow
+
+For a change to a flow across three or more parts, a Mermaid diagram. Delete this section otherwise.
+
+## Follow-ups
+
+Issue links only.
+
+Fixes #

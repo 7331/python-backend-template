@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "ci-${{ github.event_name == 'pull_request' && format('pull-request-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}"
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  hooks:
+    name: Hooks
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          cache-dependency-glob: |
+            backend/uv.lock
+            e2e/uv.lock
+      - name: Run every hook of the pre-push stage on every file
+        run: uvx prek run --stage pre-push --all-files
+
+  image:
+    name: Image build
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 20
+    env:
+      IMAGE_TAG: ci-backend:run-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the backend image without pushing
+        run: docker buildx build --load --file backend/Dockerfile --tag "$IMAGE_TAG" .
+      - name: Remove this run's image
+        if: always()
+        run: docker image rm --force "$IMAGE_TAG"
+
+  check:
+    name: Check
+    if: always()
+    needs:
+      - hooks
+      - image
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 2
+    steps:
+      - name: Every needed job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq --raw-output 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq --exit-status 'all(.[]; .result == "success")' <<<"$NEEDS" >/dev/null || {
+            echo "::error::A needed job did not pass."
+            exit 1
+          }

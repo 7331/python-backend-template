@@ -50,14 +50,20 @@ jobs:
             --data "include_accounts=${INCLUDE_ACCOUNTS}" \
             . "${RUNNER_TEMP}/${OPTION_SET}"
           git -C "${RUNNER_TEMP}/${OPTION_SET}" add --all
-          git -C "${RUNNER_TEMP}/${OPTION_SET}" commit --quiet --message "Generated app"
+          git -C "${RUNNER_TEMP}/${OPTION_SET}" commit --quiet --message "chore: generate the app"
       - name: Run every gate on the generated app
         env:
           OPTION_SET: ${{ matrix.option_set }}
         working-directory: ${{ runner.temp }}
         run: |
           cd "${OPTION_SET}"
-          uvx prek run --all-files
+          uvx prek run --stage pre-push --all-files
+      - name: Audit the generated app's workflows and Dependabot config
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPTION_SET: ${{ matrix.option_set }}
+        working-directory: ${{ runner.temp }}
+        run: uvx zizmor==1.32.0 "${OPTION_SET}/.github"
 
   update-from-latest-release:
     runs-on: ubuntu-latest
@@ -183,3 +189,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: uvx zizmor==1.32.0 .github
+      - name: The template repository's title check and ruleset match what the app gets
+        run: |
+          cmp .github/workflows/pr-title.yml template/.github/workflows/pr-title.yml
+          cmp .github/rulesets/main.json template/.github/rulesets/main.json
+
+  check:
+    name: Check
+    if: always()
+    needs:
+      - generated-app-gates
+      - update-from-latest-release
+      - generated-app-boot
+      - workflow-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Every needed job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq --raw-output 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq --exit-status 'all(.[]; .result == "success")' <<<"$NEEDS" >/dev/null || {
+            echo "::error::A needed job did not pass."
+            exit 1
+          }
