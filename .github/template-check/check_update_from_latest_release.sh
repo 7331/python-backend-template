@@ -96,7 +96,7 @@ if [[ "${app_state}" == changed ]]; then
 fi
 
 echo "Updating the ${app_state} app from ${latest_release_tag} to the template's HEAD"
-uvx copier update --trust --defaults --vcs-ref HEAD --conflict inline
+uvx copier update --trust --defaults --vcs-ref HEAD --conflict inline --data "include_worker=${INCLUDE_WORKER:-false}"
 fail_on_update_conflicts
 uv run --quiet --directory backend python tools/dump_openapi.py openapi.json
 if [[ "${app_state}" == changed ]]; then

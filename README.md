@@ -41,6 +41,7 @@ Production keeps both files outside the checkout with mode 600, plus the WAL-G b
 | `project_description` | One line for `pyproject.toml` and the CLI help. |
 | `include_postgres` | Default yes. Adds Postgres 18, Alembic, the `migrate` service, a request-scoped `DatabaseSession` and `deploy/postgres/` with WAL-G backups and the restore drill. Off means no database at all. |
 | `include_accounts` | Asked only with Postgres. Default yes. Adds `app/<root>/accounts/`: passkey sign-up and sign-in, cookie sessions, sign-out and `GET /api/v1/me`. |
+| `include_worker` | Asked only with Postgres. Default no. Adds a job queue in a `jobs` table (`app/infrastructure/task_queue/`), the `run-worker` command, a `worker` service in compose, one sample job kind and `e2e/worker_flow.py`. |
 
 ## Update an app
 
@@ -57,7 +58,7 @@ version against the newest release tag and applies that diff. Conflicts land as 
 - `copier.yml` holds the questions, the setup tasks and the copy message.
 - `template/` is what Copier renders. Only `.jinja` files are rendered. A file or folder whose name renders empty is
   skipped, which is how the options drop their files.
-- `.github/workflows/template-check.yml` generates the app three ways (no Postgres, Postgres, Postgres with accounts),
+- `.github/workflows/template-check.yml` generates the app five ways (no Postgres, Postgres, Postgres with accounts, and the last two with the worker),
   runs `uvx prek run --stage pre-push --all-files` in each and audits the workflows each app gets with
   [zizmor](https://docs.zizmor.sh/). A second job audits this repository's own workflows. `Check` passes only when
   both did.

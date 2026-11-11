@@ -16,7 +16,7 @@ Sources for the layout: [fastapi-best-practices](https://github.com/zhanymkanov/
   .pre-commit-config.yaml        every gate, run by prek
   .copier-answers.yml            read by `copier update`
   .github/pull_request_template.md
-  docker-compose.yml             {% if include_postgres %}postgres, migrate and api{% else %}the api service{% endif %}
+  docker-compose.yml             {% if include_worker %}postgres, migrate, api and worker{% elif include_postgres %}postgres, migrate and api{% else %}the api service{% endif %}
   backend/
     Dockerfile                   one image for every process
     pyproject.toml               dependencies, tool settings, import-linter contracts
@@ -30,6 +30,10 @@ Sources for the layout: [fastapi-best-practices](https://github.com/zhanymkanov/
     app/
       __main__.py cli.py         `python -m app`: one typer command per process role
       main.py                    create_app: routes, middlewares, exception handlers
+{%- if include_worker %}
+      worker.py                  run_worker: the job kinds, SIGTERM, the claim loop
+      worker_healthcheck.py      the worker container's healthcheck
+{%- endif %}
       openapi_contract.py        error codes in the OpenAPI document
       rate_limit_middleware.py   per-IP request budgets
       request_log_middleware.py  one log line per request
@@ -41,9 +45,15 @@ Sources for the layout: [fastapi-best-practices](https://github.com/zhanymkanov/
 {%- if include_accounts %}
         accounts/                passkey sign-up and sign-in, cookie sessions
 {%- endif %}
+{%- if include_worker %}
+        queue_probe/             a sample job kind that proves the queue; delete it with the app's first real job
+{%- endif %}
       infrastructure/
 {%- if include_postgres %}
         postgres/                Database, ORM Base, mixins, enum builder
+{%- endif %}
+{%- if include_worker %}
+        task_queue/              the job queue: the jobs table, enqueue_job, JobPayload, JobQueueWorker
 {%- endif %}
         rate_limit/              the in-memory GCRA limiter
       shared/                    AppError, the error envelope, logging, request helpers{% if include_postgres %}, BlockingExecutor{% endif %}
@@ -67,18 +77,28 @@ The `layers` contract in `[tool.importlinter]` (`backend/pyproject.toml`), top t
 
 ```mermaid
 flowchart TD
+{%- if include_worker %}
+    cli["app.cli"] --> main["app.main | app.worker"]
+    main --> healthcheck["app.worker_healthcheck"]
+    healthcheck --> contract["app.openapi_contract"]
+{%- else %}
     cli["app.cli"] --> main["app.main"]
     main --> contract["app.openapi_contract"]
+{%- endif %}
     contract --> middlewares["app.rate_limit_middleware | app.request_log_middleware | app.unhandled_error_middleware"]
     middlewares --> lifespan["app.lifespan"]
     lifespan --> events["app.log_events"]
 {%- if include_accounts %}
-    events --> domains["app.{{ root_package }}.accounts"]
+    events --> domains["app.{{ root_package }}.accounts{% if include_worker %}, then app.{{ root_package }}.queue_probe{% endif %}"]
 {%- else %}
     events --> domains["app.{{ root_package }}"]
 {%- endif %}
     domains --> limiter["app.infrastructure.rate_limit"]
-{%- if include_postgres %}
+{%- if include_worker %}
+    limiter --> task_queue["app.infrastructure.task_queue"]
+    task_queue --> postgres["app.infrastructure.postgres"]
+    postgres --> base["app.shared | app.configuration"]
+{%- elif include_postgres %}
     limiter --> postgres["app.infrastructure.postgres"]
     postgres --> base["app.shared | app.configuration"]
 {%- else %}
@@ -93,6 +113,9 @@ flowchart TD
 - `forbidden`: `router`, `dependencies`, `cli`, `app.main` and `app.cli` never import a `models` or `repository` module directly. They call a service.
 - `forbidden`: `models` never imports FastAPI or Starlette.
 - `protected`, one per domain: only `app.{{ root_package }}.accounts` imports its own `models` and `repository`.
+{%- endif %}
+{%- if include_worker %}
+- `forbidden`: `app.worker`, `app.worker_healthcheck`, `app.infrastructure.task_queue` and every `jobs.py` never import FastAPI, Starlette or a `dependencies` module, directly or through another module. A worker has no request.
 {%- endif %}
 - Each contract's `broken_contract_guidance` says how to fix a break. A new domain takes its own place in `layers`{% if include_accounts %} and adds its own `protected` contract{% endif %}.
 
@@ -126,12 +149,17 @@ flowchart TD
 
 ### Containers
 
-`docker-compose.yml` plus `deploy/docker-compose.production.yml`. Start order: `postgres` healthy, then `migrate` (`alembic upgrade head`) to completion, then `api`.
+`docker-compose.yml` plus `deploy/docker-compose.production.yml`. Start order: `postgres` healthy, then `migrate` (`alembic upgrade head`) to completion, then `api`{% if include_worker %} and `worker`{% endif %}.
 
 ```mermaid
 flowchart LR
     api_env["API env file (.env)"] -. env_file .-> api
     api_env -. env_file .-> migrate
+{%- if include_worker %}
+    api_env -. env_file .-> worker
+    worker -- "backend_data (internal)" --> postgres
+    worker -- "backend_egress" --> outside
+{%- endif %}
     owner_env["database owner env file (.env.database-owner)"] -. env_file .-> migrate
     owner_env -. env_file .-> postgres
     backup_env["backup env file, production only"] -. env_file .-> postgres
@@ -188,6 +216,9 @@ app/{{ root_package }}/<domain>/
   repository.py      queries for this domain's own tables, no decisions
 {%- endif %}
   router.py          HTTP routes, thin
+{%- if include_worker %}
+  jobs.py            job kinds: a JobPayload subclass per kind, only when the domain has any
+{%- endif %}
   dependencies.py    request-scoped injection, only when a router needs it
   sweeps.py          clock-driven passes a worker loop runs, only when the domain has any
   cli.py             CLI commands for this domain, only when it has any
@@ -255,7 +286,7 @@ A write that must be serialised across processes takes `pg_advisory_xact_lock` o
 
 ### Pool budget
 
-Each process holds its own pool. The sum over every process stays under `max_connections` (100) minus `superuser_reserved_connections` (3). The API's pool is `API_DATABASE_POOL_SIZE` 10 plus `API_DATABASE_MAXIMUM_OVERFLOW` 5, at most 15 (`app/lifespan/composition.py`). Count every other process at its maximum: each worker's pool, the `migrate` run, a CLI command, and the backup scripts' sessions. Shrink a pool before raising `max_connections`.
+Each process holds its own pool. The sum over every process stays under `max_connections` (100) minus `superuser_reserved_connections` (3). The API's pool is `API_DATABASE_POOL_SIZE` 10 plus `API_DATABASE_MAXIMUM_OVERFLOW` 5, at most 15 (`app/lifespan/composition.py`).{% if include_worker %} The worker and a CLI command each hold `PROCESS_DATABASE_POOL_SIZE` 2 with no overflow.{% endif %} Count every other process at its maximum: each worker's pool, the `migrate` run, a CLI command, and the backup scripts' sessions. Shrink a pool before raising `max_connections`.
 
 ### Migrations
 
@@ -276,7 +307,7 @@ The `postgres` service passes every setting as a `-c` flag in `docker-compose.ym
 - `log_line_prefix` carries the query id, which matches `pg_stat_statements.queryid`. Revision `0002` creates that extension. Rank statements with `SELECT query, calls, total_exec_time FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 5`.
 - `archive_mode` is off locally and on in production, where `deploy/deploy.sh` and the backup scripts export `POSTGRES_ARCHIVE_MODE=on`. `archive_timeout=60` switches segments after a minute with activity, so a lost disk loses about a minute. Only the production image has `wal-g`.
 
-Docker sets no memory limit by default ([resource constraints](https://docs.docker.com/engine/containers/resource_constraints/)), so `deploy/docker-compose.production.yml` sets `mem_limit` on every service: 512 MB for `api` and `migrate`, and `POSTGRES_MEMORY_LIMIT` (default `1g`) for `postgres`. At the defaults `shared_buffers`, `/dev/shm`, three autovacuum workers and the API's 15 connections use about 816 MB of it. To grow, raise `POSTGRES_MEMORY_LIMIT` and `POSTGRES_SHARED_BUFFERS` together, and set `POSTGRES_EFFECTIVE_CACHE_SIZE` to the limit minus `shared_buffers`.
+Docker sets no memory limit by default ([resource constraints](https://docs.docker.com/engine/containers/resource_constraints/)), so `deploy/docker-compose.production.yml` sets `mem_limit` on every service: 512 MB for `api`{% if include_worker %}, `worker`{% endif %} and `migrate`, and `POSTGRES_MEMORY_LIMIT` (default `1g`) for `postgres`. At the defaults `shared_buffers`, `/dev/shm`, three autovacuum workers and the API's 15 connections use about 816 MB of it. To grow, raise `POSTGRES_MEMORY_LIMIT` and `POSTGRES_SHARED_BUFFERS` together, and set `POSTGRES_EFFECTIVE_CACHE_SIZE` to the limit minus `shared_buffers`.
 
 ### Backups
 
@@ -365,6 +396,38 @@ Every setting lives in a pydantic-settings `BaseSettings` in a `configuration.py
 Startup does no work. `create_app` is a uvicorn factory (`factory=True`, started by `python -m app serve-api`), so importing `app.main` reads no settings. The API lifespan opens connections and returns. {% if include_postgres %}Migrations (the compose `migrate` service), seeding, rebuilding derived state and maintenance are deploy steps or worker passes{% else %}Seeding, rebuilding derived state and maintenance are deploy steps or worker passes{% endif %}, so a restart is fast and the same everywhere.
 
 ## Background work
+{%- if include_worker %}
+
+Work outside a request runs in the `worker` service, never in the web server. It is `python -m app run-worker` (`app/worker.py`) from the same image as the API. It opens `ProcessResources` (`open_process_resources` in `app/lifespan/composition.py`), claims one job at a time from the `jobs` table and runs it.
+
+`app/infrastructure/task_queue/` is the whole queue: one table in Postgres, no Redis and no queue library. The table is its own Alembic line, `worker` (`migrations/template_versions/worker_0001_job_queue.py`), so `alembic upgrade heads` adds it to a database that already ran every other line.
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: enqueue_job, in the caller's transaction
+    queued --> running: claimed with FOR UPDATE SKIP LOCKED, attempt_count + 1, lease set
+    running --> [*]: run_job returned, the row is deleted in the handler's transaction
+    running --> queued: run_job raised with attempts left, run_at = now + backoff
+    running --> failed: run_job raised on the last attempt, last_error kept
+    running --> running: the lease ran out with attempts left, claimed again
+    running --> failed: the lease ran out on the last attempt
+    running --> queued: SIGTERM and the job outlived the grace, attempt_count - 1
+```
+
+- A job kind is a frozen `JobPayload` subclass in its domain's `jobs.py`: a `kind` string (`<package>.<job>`), the payload fields, and `run_job(session=...)`, which calls the domain's service. `app/worker.py` lists every class in `JOB_PAYLOAD_CLASSES`. A kind is stored on `jobs` rows, so renaming one ships with a revision that renames it on the queued rows.
+- A payload carries ids and plain values, never a copy of a row the handler can read by id, so a retried job reads current data.
+- Enqueue with `await enqueue_job(session, payload=...)` on the caller's own session. The job exists if and only if the caller's transaction commits. Never enqueue from a place with no transaction.
+- Delivery is at least once. `run_job` runs in one transaction and the job's row is deleted in that same transaction, so what a handler writes to Postgres commits together with the job being done, or not at all. An effect outside Postgres (an email, a call to another API) can happen twice, so the handler makes it safe to repeat: it records the send first, or passes the provider an idempotency key.
+- Attempts are bounded. `maximum_attempts` on the payload class (default 5) is stored on the row at enqueue. A failed attempt waits 2 s, doubling to at most an hour, plus up to 10% jitter. After the last attempt the row stays `failed` with `last_error`, the exception's type and message cut to 1000 characters. Nothing deletes failed rows or runs them again. To run one again: `UPDATE jobs SET status = 'queued', attempt_count = 0, run_at = now() WHERE id = <id>`.
+- Every error is retried the same way, an unknown kind and a payload that no longer validates included, so a job a newer build enqueued waits for a worker that knows it.
+- A claim holds a lease of `{{ environment_prefix }}_TASK_QUEUE_JOB_LEASE_SECONDS` (60). A handler is cancelled after `{{ environment_prefix }}_TASK_QUEUE_JOB_TIMEOUT_SECONDS` (30), and the settings refuse a lease that is not longer, so a live worker never has its job claimed from under it. A worker that dies leaves the row `running`, and a worker claims it again when the lease runs out. A crash counts as an attempt, so a job that kills its worker ends `failed` too. A handler that blocks the event loop past the lease can run twice at once. The second claim wins, and the first rolls back when its delete finds the row claimed again.
+- The idle worker polls every `{{ environment_prefix }}_TASK_QUEUE_POLL_INTERVAL_SECONDS` (1): one statement that fails expired jobs with no attempts left, one that claims. There is no `LISTEN`/`NOTIFY`: a job waits at most one poll interval.
+- On SIGTERM the worker claims nothing more. The job in hand gets 10 s to finish. After that it is cancelled, rolled back and put back as `queued` without using an attempt. `stop_grace_period` is 25 s.
+- The claim loop touches `/tmp/worker-heartbeat` after every claim that reached Postgres. The healthcheck (`python -m app.worker_healthcheck`) fails when the file is older than the job timeout plus the poll interval plus 30 s.
+- `SKIP LOCKED` makes a second worker safe. Each worker runs one job at a time.
+- `queue_probe` is a sample kind. `python -m app enqueue-queue-probe --hold-seconds 5 --outcome raise` enqueues a job that holds, then succeeds or raises, and `e2e/worker_flow.py` uses it to prove retries, the failed state and the lease on a real stack. Once the app has a job of its own, delete the package, its entry in `JOB_PAYLOAD_CLASSES`, its layer in `pyproject.toml` and the CLI command, and point the flow at the real job.
+- There is no scheduler. Clock-driven work is not built.
+{%- else %}
 
 Work outside a request runs in a worker process, never in the web server. The template ships no worker. An app that needs one adds `python -m app run-worker` as its own compose service from the same image. The worker opens `Resources` like the API and runs each job as a plain `async` loop of one pass{% if include_postgres %} in one transaction{% endif %} and a sleep, all in one `asyncio.TaskGroup`. A failed pass is logged and the loop goes on. A loop that dies is logged and ends the process, so compose restarts it.
 
@@ -376,10 +439,13 @@ Work outside a request runs in a worker process, never in the web server. The te
 {%- endif %}
 - A pass loads what it needs each time, so a restarted worker picks up where {% if include_postgres %}the database says{% else %}the systems it reads say{% endif %}.
 - SIGTERM cancels the loops, {% if include_postgres %}the passes roll back, {% endif %}and `Resources` closes. `stop_grace_period` is longer than the slowest pass.
+{%- endif %}
 
 {%- if include_postgres %}
+{%- if not include_worker %}
 
 There is no job queue library. Work deferred from a request is a row the request writes in its own transaction, and a worker loop picks it up, so the work exists only if the write committed.
+{%- endif %}
 
 ## Events and webhooks
 
@@ -390,7 +456,7 @@ A received webhook has its signature checked against the raw body, and old times
 
 ## CLI
 
-One entry point, `python -m app` (and `{{ project_slug }}` in `[project.scripts]`), built on typer. Each process role is a command: `serve-api`, and `run-worker` once there is a worker. A domain's commands live in its `cli.py` and are added to `app/cli.py`. A command opens only the resources it needs and calls a service.
+One entry point, `python -m app` (and `{{ project_slug }}` in `[project.scripts]`), built on typer. Each process role is a command: `serve-api`, and `run-worker` {% if include_worker %}for the worker. `enqueue-queue-probe` puts a sample job on the queue{% else %}once there is a worker{% endif %}. A domain's commands live in its `cli.py` and are added to `app/cli.py`. A command opens only the resources it needs and calls a service.
 
 ## HTTP API conventions
 
@@ -511,5 +577,7 @@ In production the `postgres` service gets 60 s to stop so the archiver can push 
 Every long-running service has:
 
 - one health endpoint, `/health`, which returns 200 while the process runs and checks nothing else
+{%- if include_worker %} (the worker has no port: its healthcheck reads the age of a file the claim loop touches)
+{%- endif %}
 - graceful shutdown, so on SIGTERM it stops taking work, finishes what is running, then closes resources, with a `stop_grace_period` longer than the slowest request or pass
 - explicit maxima on pools, request body sizes (64 KB at the proxy) and request budgets

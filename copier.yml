@@ -75,6 +75,16 @@ include_accounts:
     accounts keep their tables in Postgres, so they need include_postgres
     {% endif %}
 
+include_worker:
+  type: bool
+  help: Include a background worker (a job queue table in Postgres, a run-worker command, a worker service in compose)
+  default: false
+  when: "{{ include_postgres }}"
+  validator: >-
+    {% if include_worker and not include_postgres %}
+    the worker keeps its job queue in Postgres, so it needs include_postgres
+    {% endif %}
+
 environment_prefix:
   type: str
   default: "{{ project_slug.split('-')[0] | upper }}"

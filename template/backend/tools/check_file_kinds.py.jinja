@@ -11,6 +11,9 @@ DOMAIN_FILE_KINDS = frozenset(
         "dependencies",
         "enums",
         "errors",
+{%- if include_worker %}
+        "jobs",
+{%- endif %}
         "log_events",
 {%- if include_postgres %}
         "models",

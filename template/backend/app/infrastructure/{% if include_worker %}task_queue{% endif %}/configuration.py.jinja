@@ -1,0 +1,32 @@
+from functools import lru_cache
+from typing import Self
+
+from pydantic import Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+WORKER_HEARTBEAT_SLACK_SECONDS = 30.0
+
+
+class TaskQueueSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="{{ environment_prefix }}_TASK_QUEUE_", extra="ignore")
+
+    poll_interval_seconds: float = Field(default=1.0, gt=0)
+    job_timeout_seconds: float = Field(default=30.0, gt=0)
+    job_lease_seconds: float = Field(default=60.0, gt=0)
+
+    @model_validator(mode="after")
+    def require_lease_longer_than_job_timeout(self) -> Self:
+        if self.job_lease_seconds <= self.job_timeout_seconds:
+            raise ValueError(
+                "{{ environment_prefix }}_TASK_QUEUE_JOB_LEASE_SECONDS must be longer than "
+                "{{ environment_prefix }}_TASK_QUEUE_JOB_TIMEOUT_SECONDS, or a job still running is claimed twice"
+            )
+        return self
+
+    def get_heartbeat_stale_after_seconds(self) -> float:
+        return self.job_timeout_seconds + self.poll_interval_seconds + WORKER_HEARTBEAT_SLACK_SECONDS
+
+
+@lru_cache
+def read_task_queue_settings() -> TaskQueueSettings:
+    return TaskQueueSettings()
