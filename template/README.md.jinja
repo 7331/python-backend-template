@@ -14,6 +14,9 @@ docker compose up -d --build --wait
 curl http://127.0.0.1:8000/health
 ```
 
+For day-to-day work, `BACKEND-API.md` (Local development) has two loops that need no image rebuild: compose watch,
+and the backend on the host with `serve-api --reload`.
+
 ## Env files
 
 - `.env` is read by the API. Fill in every key that `.env.example` leaves empty.
@@ -105,6 +108,10 @@ deploy/deploy.sh
 ```
 
 It builds the image from the checkout, starts the stack behind the reverse proxy{% if include_postgres %}, and takes a base backup{% endif %}.
+{%- if include_postgres %}
+Once per host, install the backup schedule's systemd unit (`BACKEND-API.md`, Backup schedule). Until it runs,
+`deploy/deploy.sh` deploys, warns and exits 1.
+{%- endif %}
 
 ## Update from the template
 

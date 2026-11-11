@@ -19,16 +19,16 @@ def check_health(flow_report: FlowReport, *, api_publish_port: int) -> None:
     health_reply = send_http_request("/health", api_publish_port=api_publish_port, method="GET", headers={}, body=None)
     flow_report.record_check(
         "health",
-        passed=health_reply.status == 200 and health_reply.body == EXPECTED_HEALTH_BODY,
-        detail=f"{health_reply.status} {health_reply.body!r}",
+        passed=health_reply.status_code == 200 and health_reply.body == EXPECTED_HEALTH_BODY,
+        detail=f"{health_reply.status_code} {health_reply.body!r}",
     )
     readiness_reply = send_http_request(
         "/ready", api_publish_port=api_publish_port, method="GET", headers={}, body=None
     )
     flow_report.record_check(
         "readiness",
-        passed=readiness_reply.status == 200 and readiness_reply.body == EXPECTED_HEALTH_BODY,
-        detail=f"{readiness_reply.status} {readiness_reply.body!r}",
+        passed=readiness_reply.status_code == 200 and readiness_reply.body == EXPECTED_HEALTH_BODY,
+        detail=f"{readiness_reply.status_code} {readiness_reply.body!r}",
     )
 
 

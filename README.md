@@ -19,6 +19,9 @@ curl http://127.0.0.1:8000/health
 uvx prek run --stage pre-push --all-files
 ```
 
+For day-to-day work the app's `BACKEND-API.md` (Local development) has two loops that need no image rebuild:
+compose watch, and the backend on the host with `serve-api --reload`.
+
 `--trust` lets Copier run the setup tasks: `git init`, `uv lock` in `backend/` and `e2e/`, an import sort and format
 pass, a first `backend/openapi.json` and `uvx prek install`. Each app makes and commits its own `uv.lock`.
 
@@ -58,10 +61,12 @@ version against the newest release tag and applies that diff. Conflicts land as 
 - `copier.yml` holds the questions, the setup tasks and the copy message.
 - `template/` is what Copier renders. Only `.jinja` files are rendered. A file or folder whose name renders empty is
   skipped, which is how the options drop their files.
-- `.github/workflows/template-check.yml` generates the app five ways (no Postgres, Postgres, Postgres with accounts, and the last two with the worker),
-  runs `uvx prek run --stage pre-push --all-files` in each and audits the workflows each app gets with
-  [zizmor](https://docs.zizmor.sh/). A second job audits this repository's own workflows. `Check` passes only when
-  both did.
+- `.github/workflows/template-check.yml` generates the app five ways (no Postgres, Postgres, Postgres with accounts,
+  and the last two with the worker), runs both gate stages in each and audits the workflows each app gets with
+  [zizmor](https://docs.zizmor.sh/). It
+  also updates an app made from the newest release tag to this commit, untouched and with an app's own edits, and
+  boots the two Postgres sets and runs their e2e flows. A last job audits this repository's own workflows. `Check`
+  passes only when every job did.
 - `.github/workflows/pr-title.yml` and `.github/rulesets/main.json` are the same files an app gets: a pull request
   title is `type(scope): sentence`, and `main` takes squash merges of pull requests that pass `Check` and
   `Conventional title`. `template-check` fails when the two copies differ.
