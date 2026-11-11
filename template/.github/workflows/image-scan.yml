@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: image-scan
+  cancel-in-progress: false
+
 jobs:
   backend-image:
     name: Backend image — Trivy
@@ -31,7 +35,7 @@ jobs:
           exit-code: "1"
       - name: What to do when this fails
         if: failure()
-        run: echo "::notice::A base image has a fixable HIGH or CRITICAL vulnerability. Merge Dependabot's base-images pull request, or move the digests in backend/Dockerfile by hand, then deploy."
+        run: echo "::notice::The backend image has a fixable HIGH or CRITICAL vulnerability. For an OS package, move APT_EPOCH in backend/Dockerfile to today. For a Python package, upgrade it in backend/uv.lock. Then deploy."
       - name: Remove this run's image
         if: always()
         run: docker image rm --force "$IMAGE_TAG"

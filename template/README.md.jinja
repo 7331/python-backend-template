@@ -88,7 +88,8 @@ CI runs on GitHub's `ubuntu-latest`. To move it to a self-hosted runner, set the
 the runner's labels as JSON: `gh variable set CI_RUNNER --body '["self-hosted","<label>"]'`.
 
 `.github/workflows/image-scan.yml` builds the backend image every Monday and fails on a fixable HIGH or CRITICAL
-vulnerability. It is the only scheduled workflow. Delete the file to stop it.
+vulnerability. When an OS package is the cause, move `APT_EPOCH` in `backend/Dockerfile` to today's date so the next
+build upgrades it. It is the only scheduled workflow. Delete the file to stop it.
 
 ## Deploy
 

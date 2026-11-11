@@ -17,6 +17,11 @@ ENV PYTHONUNBUFFERED=1 \
     TZ=UTC \
     PATH="/app/backend/.venv/bin:${PATH}" \
     PYTHONPATH=/app/backend
+ARG APT_EPOCH=2026-11-11
+RUN echo "apt epoch ${APT_EPOCH}" >/dev/null && apt-get update && \
+    apt-get upgrade -y --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/* && \
+    python -m pip uninstall -y pip
 WORKDIR /app/backend
 COPY --from=python_dependencies_build /app/backend/.venv /app/backend/.venv
 RUN --mount=type=bind,source=backend,target=/repository_backend \
