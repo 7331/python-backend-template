@@ -34,12 +34,9 @@ count_rows_query="SELECT format('%I.%I', table_schema, table_name) || ' ' ||
   FROM information_schema.tables
   WHERE table_type = 'BASE TABLE' AND table_schema NOT IN ('pg_catalog', 'information_schema')
   ORDER BY 1"
-alembic_revision_query="SELECT coalesce((SELECT version_num FROM alembic_version), 'none')"
+alembic_revision_query="SELECT coalesce(string_agg(version_num, ' ' ORDER BY version_num), 'none') FROM alembic_version"
 
-backup_list_json=$("${compose[@]}" exec -T -u postgres postgres wal-g backup-list --json --detail)
-newest_base_backup_age_hours=$(printf '%s\n' "SELECT floor(extract(epoch FROM now() - max((backup ->> 'finish_time')::timestamptz)) / 3600)::int
-  FROM jsonb_array_elements(:'backup_list'::jsonb) AS backup;" |
-  "${compose[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -tA -v backup_list="$backup_list_json" | tr -d '\r')
+newest_base_backup_age_hours=$("$repository_directory/deploy/postgres/read_newest_base_backup_age_hours.sh")
 [[ -n "$newest_base_backup_age_hours" ]] || fail "the bucket holds no base backup; run deploy/postgres/backup_postgres.sh"
 (( newest_base_backup_age_hours <= maximum_base_backup_age_hours )) ||
   fail "the newest base backup is ${newest_base_backup_age_hours} hours old; the backup schedule has stopped"
@@ -79,8 +76,8 @@ restore_seconds=$(( $(date -u +%s) - restore_started_epoch ))
 
 restored_revision=$(query_restored "$alembic_revision_query")
 [[ "$restored_revision" == "$production_revision" ]] ||
-  fail "restored alembic revision $restored_revision differs from production's $production_revision"
-printf 'alembic revision: restored %s, production %s\n' "$restored_revision" "$production_revision"
+  fail "restored alembic revisions $restored_revision differ from production's $production_revision"
+printf 'alembic revisions: restored %s, production %s\n' "$restored_revision" "$production_revision"
 
 declare -A restored_row_counts
 while read -r table_name row_count; do

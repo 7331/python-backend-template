@@ -1,7 +1,10 @@
 [alembic]
 script_location = %(here)s/migrations
+version_locations =
+    %(here)s/migrations/template_versions
+    %(here)s/migrations/versions
 prepend_sys_path = .
-path_separator = os
+path_separator = newline
 file_template = %%(rev)s_%%(slug)s
 
 [loggers]

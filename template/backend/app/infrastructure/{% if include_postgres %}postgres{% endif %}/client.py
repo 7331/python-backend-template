@@ -1,4 +1,5 @@
 import asyncio
+from functools import partial
 from pathlib import Path
 
 from alembic.config import Config as AlembicConfig
@@ -24,12 +25,14 @@ DATABASE_POOL_TIMEOUT_SECONDS = 30
 DATABASE_READINESS_TIMEOUT_SECONDS = 2
 
 
-def read_current_revision(connection: Connection) -> str | None:
-    return MigrationContext.configure(connection).get_current_revision()
+def read_applied_revisions(connection: Connection) -> tuple[str, ...]:
+    return MigrationContext.configure(connection).get_current_heads()
 
 
-def read_head_revision() -> str | None:
-    return ScriptDirectory.from_config(AlembicConfig(str(ALEMBIC_CONFIGURATION_PATH))).get_current_head()
+def list_unapplied_head_revisions(applied_revisions: tuple[str, ...]) -> list[str]:
+    script_directory = ScriptDirectory.from_config(AlembicConfig(str(ALEMBIC_CONFIGURATION_PATH)))
+    reached_revisions = {script.revision for script in script_directory.get_all_current(applied_revisions)}
+    return sorted(set(script_directory.get_heads()) - reached_revisions)
 
 
 def build_not_ready_error(error: BaseException) -> NotReadyError:
@@ -63,11 +66,14 @@ class Database:
 
     async def refuse_schema_behind_head(self, *, file_read_executor: BlockingExecutor) -> None:
         async with self.engine.connect() as connection:
-            current_revision = await connection.run_sync(read_current_revision)
-        head_revision = await file_read_executor.run_blocking(read_head_revision)
-        if current_revision != head_revision:
+            applied_revisions = await connection.run_sync(read_applied_revisions)
+        unapplied_head_revisions = await file_read_executor.run_blocking(
+            partial(list_unapplied_head_revisions, applied_revisions)
+        )
+        if unapplied_head_revisions:
             raise RuntimeError(
-                f"schema is at {current_revision}, this build needs {head_revision}; run `alembic upgrade head`"
+                f"schema is at {sorted(applied_revisions)}, this build also needs {unapplied_head_revisions}; "
+                "run `alembic upgrade heads`"
             )
 
     async def run_readiness_query(self) -> None:

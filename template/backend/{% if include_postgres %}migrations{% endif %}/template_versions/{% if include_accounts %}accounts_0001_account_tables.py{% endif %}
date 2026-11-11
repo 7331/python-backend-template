@@ -1,19 +1,16 @@
 from collections.abc import Sequence
 
-{% if include_accounts -%}
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-{% endif -%}
-revision: str = "0001"
+revision: str = "accounts_0001"
 down_revision: str | None = None
-branch_labels: str | Sequence[str] | None = None
+branch_labels: str | Sequence[str] | None = ("accounts",)
 depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-{%- if include_accounts %}
     op.create_table(
         "accounts",
         sa.Column("id", sa.BigInteger(), sa.Identity(always=False), nullable=False),
@@ -75,9 +72,6 @@ def upgrade() -> None:
         sa.UniqueConstraint("challenge_hash"),
     )
     op.create_index(op.f("ix_passkey_challenges_expires_at"), "passkey_challenges", ["expires_at"], unique=False)
-{%- else %}
-    pass
-{%- endif %}
 
 
 def downgrade() -> None:

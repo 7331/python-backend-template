@@ -91,7 +91,7 @@ services:
       - *backend_environment_file
       - *database_owner_environment_file
     restart: "no"
-    command: ["alembic", "upgrade", "head"]
+    command: ["alembic", "upgrade", "heads"]
     depends_on:
       postgres:
         condition: service_healthy
