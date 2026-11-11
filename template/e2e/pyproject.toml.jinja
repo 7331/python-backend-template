@@ -7,18 +7,18 @@ requires-python = ">=3.15,<3.16"
 dependencies = [
     "cbor2==6.1.5",
     "cryptography==50.0.2",
-    "pydantic==2.14.1",
+    "pydantic==2.14.2",
 ]
 {%- else %}
 dependencies = [
-    "pydantic==2.14.1",
+    "pydantic==2.14.2",
 ]
 {%- endif %}
 
 [dependency-groups]
 dev = [
     "ruff>=0.17.3",
-    "ty==0.0.94",
+    "ty==0.0.96",
 ]
 
 [tool.uv]

@@ -5,24 +5,24 @@ description = "{{ project_description }}"
 requires-python = ">=3.15,<3.16"
 dependencies = [
 {%- if include_postgres %}
-    "alembic>=1.20.0",
+    "alembic>=1.20.1",
 {%- endif %}
     "asgi-correlation-id>=5.0.1",
-    "fastapi>=0.143.0",
-    "orjson>=3.11.0",
+    "fastapi>=0.162.0",
+    "orjson>=3.13.0",
 {%- if include_postgres %}
     "psycopg[binary]>=3.3.6",
 {%- endif %}
-    "pydantic>=2.14.0",
-    "pydantic-settings>=2.15.0",
+    "pydantic>=2.14.2",
+    "pydantic-settings>=2.16.2",
 {%- if include_postgres %}
-    "sqlalchemy[asyncio]>=2.1.4",
+    "sqlalchemy[asyncio]>=2.1.6",
 {%- endif %}
-    "starlette>=1.7.0",
+    "starlette>=1.10.0",
     "structlog>=26.1.0",
     "typer>=0.27.3",
     "uvicorn[standard]>=0.54.0",
-    "uvloop>=0.22.0",
+    "uvloop>=0.23.0",
 {%- if include_accounts %}
     "webauthn==3.0.1",
 {%- endif %}
@@ -36,7 +36,7 @@ dev = [
     "deptry>=0.25.1",
     "import-linter>=2.15",
     "ruff>=0.17.3",
-    "ty==0.0.94",
+    "ty==0.0.96",
 ]
 
 [build-system]

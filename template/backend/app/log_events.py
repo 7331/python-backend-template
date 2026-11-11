@@ -16,5 +16,5 @@ class RequestHandled(LogEvent):
     operation = "request"
     method: str
     route: str
-    status: int
+    status_code: int
     duration_milliseconds: float
