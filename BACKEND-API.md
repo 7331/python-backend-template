@@ -12,7 +12,6 @@ Sources for the layout: [fastapi-best-practices](https://github.com/zhanymkanov/
   .env.example                   every key of the API's env file (copy to .env)
   .env.database-owner.example    the superuser password, for postgres and migrate only
   .pre-commit-config.yaml        every gate, run by prek
-  .copier-answers.yml            read by `copier update`
   .github/                       CI, the title check, the image scan, Dependabot, issue forms, the `main` ruleset
   docker-compose.yml             postgres, migrate, api and worker, plus a local bucket server
   compose.watch.yml              local only: compose watch for api, named with `--file`
@@ -22,7 +21,7 @@ Sources for the layout: [fastapi-best-practices](https://github.com/zhanymkanov/
     pyproject.toml               dependencies, tool settings, import-linter contracts
     openapi.json                 the committed API contract
     alembic.ini
-    migrations/                  env.py, template_versions/ (the template's revisions), versions/ (the app's)
+    migrations/                  env.py, template_versions/ (the revisions the template came with), versions/ (the app's)
     semgrep/                     structural and naming rules ruff can't express, tests/ with a violation of each
     ty_fixture/                  a violation of each ty rule set to error
     vulture_whitelist.py         names only reached at runtime
@@ -243,12 +242,11 @@ Each process holds its own pool. The sum over every process stays under `max_con
 
 ### Migrations
 
-Alembic owns the schema, in separate lines that can't collide: the template's (`template_NNNN`, label `template`) and one per template option (`accounts_NNNN`, label `accounts`) in `backend/migrations/template_versions/`, and the app's (`app_NNNN`, label `app`) in `backend/migrations/versions/`. The app writes only in `versions/`, and the template only in `template_versions/`, beyond the empty `app_0001` root it ships. No `create_all`, no hand `ALTER` on a live database. `alembic upgrade heads` applies every line and is the one deploy command.
+Alembic owns the schema, in separate lines that can't collide. The revisions the template came with are in `backend/migrations/template_versions/`: the base line (`template_NNNN`, label `template`) and one line per part that can be removed (`accounts_NNNN`, `worker_NNNN`, `object_storage_NNNN`, each labelled with its name). The app's own are in `backend/migrations/versions/` (`app_NNNN`, label `app`), which starts with the empty `app_0001` root. New revisions go on the `app` line. No `create_all`, no hand `ALTER` on a live database. `alembic upgrade heads` applies every line and is the one deploy command.
 
 After a model change, run `alembic revision --autogenerate --head app@head --rev-id app_NNNN -m "<name>"` against a running stack and read the file. Alembic refuses a revision without `--head`. `alembic check` must then report nothing. It needs a database, so it is no hook.
 
-- A revision that needs a table from another line names that line's revision in `depends_on`. A template option turned on later arrives as a new revision on its own line.
-
+- A revision that needs a table from another line names that line's revision in `depends_on`.
 - An applied revision never changes. A fix is the next revision. `downgrade()` raises.
 - No backward compatibility (owner, 2026-11-06). A schema change lands in one release: the new shape only, with a revision that moves every stored row in the same release. No dual reads, no old-shape columns or readers kept for a later release.
 - A revision that moves or backfills data is proven before merge on a disposable database migrated to the previous head and filled with realistic rows.
@@ -325,7 +323,7 @@ sequenceDiagram
     client->>bucket: GET download_url
 ```
 
-- The upload URL signs `Content-Length` and `Content-Type`. On the bucket server this template ships for local work, a PUT with another size, another type or another key answers 403 (`e2e/object_storage_flow.py` measures it). The API then reads size and type back from the bucket (`HEAD`) and checks them again; it never trusts what the client declared. The allowed types are `FileContentType` and the limit is `MAXIMUM_FILE_SIZE_BYTES` (10 MiB), both in the `files` package. `ObjectStorageClient` signs no single upload over 5 GiB; multipart upload is not built.
+- The upload URL signs `Content-Length` and `Content-Type`. On the bucket server `docker-compose.yml` runs for local work, a PUT with another size, another type or another key answers 403 (`e2e/object_storage_flow.py` measures it). The API then reads size and type back from the bucket (`HEAD`) and checks them again; it never trusts what the client declared. The allowed types are `FileContentType` and the limit is `MAXIMUM_FILE_SIZE_BYTES` (10 MiB), both in the `files` package. `ObjectStorageClient` signs no single upload over 5 GiB; multipart upload is not built.
 - An upload URL stays usable until it expires, also after the file is stored (the flow uploads to it a second time). So uploads land under `pending/`, and the copy under `files/` is one no client ever held a write URL for: the second upload does not change the stored file.
 - The bucket is private. A download is a presigned GET that lives `STARTER_OBJECT_STORAGE_DOWNLOAD_URL_LIFETIME_SECONDS` (60); whoever holds it can read the file until then. The object is stored with `Content-Disposition: attachment`. The content type is still the uploader's claim: decode the bytes before treating a file as an image.
 - Delete removes the row, then `files/<id>` and the upload under `pending/`, then commits. When the bucket fails the request answers 503, the row comes back and the client repeats the delete. So a failure leaves a row without an object, never an object nobody can find.
@@ -516,7 +514,7 @@ The gates are the checks a change passes before it merges: format, lint, types, 
 
 They run in two stages:
 
-- At commit, on the changed files: `ruff check --fix`, `ruff format`, a secret scan of the staged diff and the merge-conflict check, whose markers `copier update` leaves inline.
+- At commit, on the changed files: `ruff check --fix`, `ruff format`, a secret scan of the staged diff and the merge-conflict check.
 - At push, on everything: every other hook. `uvx prek run --stage pre-push --all-files` runs this stage by hand, and `.github/workflows/ci.yml` runs the same command on every pull request and on `main`, builds the image, starts the stack the README starts, plays the e2e flows and reports one check, `Check`. Plain `uvx prek run --all-files` runs the commit stage only.
 
 A hook limited to `stages: [pre-commit]` never runs in CI, so a new hook keeps the default stages. The commit-msg hook holds a commit subject to the one pattern in `.github/workflows/pr-title.yml`, which the `Conventional title` check also reads.
@@ -560,7 +558,7 @@ When work is split into steps, every step passes the gates. A step that changes 
 
 `backend/Dockerfile` is multi-stage and follows [uv's Docker guide](https://docs.astral.sh/uv/guides/integration/docker/): dependencies install before the source is copied, and the virtualenv is built in a builder stage and copied whole, so a Python bump changes only the `FROM` lines. Base images are pinned by digest, and Dependabot's monthly `base-images` pull request moves them. The runtime stage upgrades its OS packages behind `APT_EPOCH` and uninstalls pip. `.github/workflows/image-scan.yml` builds the image every Monday and fails on a fixable HIGH or CRITICAL vulnerability; move `APT_EPOCH` to today's date to pick up an OS fix. The image runs as a non-root user, and compose runs it read-only with a small `/tmp` tmpfs and every capability dropped. One image serves every process (`serve-api`, `alembic upgrade heads`, a worker). `Dockerfile.dockerignore` keeps everything the service does not run out of the build context.
 
-The app runs with Docker Compose on one host, behind a reverse proxy (`deploy/Caddyfile`). One image moves between environments, only environment variables differ, and every environment has its own database and credentials. There is no rollback. A bad release is fixed forward. The template runs one `api` container. A second replica keeps every request budget, because the budgets are in Postgres, but the rest is yours to set up: `docker-compose.yml` publishes one local port, and Caddy has to be told to spread requests over the replicas.
+The app runs with Docker Compose on one host, behind a reverse proxy (`deploy/Caddyfile`). One image moves between environments, only environment variables differ, and every environment has its own database and credentials. There is no rollback. A bad release is fixed forward. Compose runs one `api` container. A second replica keeps every request budget, because the budgets are in Postgres, but the rest is yours to set up: `docker-compose.yml` publishes one local port, and Caddy has to be told to spread requests over the replicas.
 
 `deploy/Caddyfile` sets `lb_try_duration 30s` and `lb_try_interval 250ms`, so during a deploy Caddy holds each request and redials until the new `api` container listens, instead of answering 502 ([reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#lb_try_duration)). Keep uvicorn's `timeout_graceful_shutdown` (20 s) below `stop_grace_period` (25 s) below `lb_try_duration` (30 s). When the API is down, a request waits 30 s for its 502.
 
