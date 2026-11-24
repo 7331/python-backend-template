@@ -101,8 +101,8 @@ For day-to-day work without an image rebuild, see Local development in `BACKEND-
 uvx prek run --stage pre-push --all-files
 ```
 
-CI runs the same command and plays the flows in `e2e/`, on `ubuntu-latest` unless the repository variable `CI_RUNNER`
-names other runner labels as JSON.
+CI runs the same command and plays the flows in `e2e/`: on a pull request once it is ready for review, on `main` and
+every Monday. It runs on `ubuntu-latest` unless the repository variable `CI_RUNNER` names other runner labels as JSON.
 
 ## Deploy
 

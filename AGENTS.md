@@ -11,7 +11,9 @@ to run the app and its checks.
   and the commit-msg hook read the one pattern in `.github/workflows/pr-title.yml`.
 - Fill in the pull request template. Each issue gets its own line, `Fixes #N` or `Part of #N`, and the check
   refuses a number that is not an issue of this repository.
-- Arm auto-merge when you open the pull request: `gh pr merge --auto --squash`. GitHub squashes it once `Check` and
+- Open a draft while the work is in progress. CI runs no lane on a draft and starts them when the pull request is
+  marked ready for review.
+- Arm auto-merge once the pull request is ready: `gh pr merge --auto --squash`. GitHub squashes it once `Check` and
   `Conventional title` pass on a branch that is up to date with `main`. Never merge by hand, and never push past a
   red check.
 - Leave auto-merge off for a change to a migration, authentication, money or the deploy files. The owner reads

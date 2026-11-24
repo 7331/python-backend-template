@@ -1,7 +1,7 @@
 # e2e
 
-End-to-end flows against a real compose stack. CI plays them all on each pull request and on `main`; by hand, run the
-ones a change needs. These are the rules for a flow.
+End-to-end flows against a real compose stack. CI plays them all on each pull request that is ready for review, on
+`main` and once a week; by hand, run the ones a change needs. These are the rules for a flow.
 `BACKEND-API.md` (Verification) says when one is due.
 
 - One flow is one user journey through the public HTTP surface, start to finish, named `<journey>_flow.py`. No file

@@ -524,7 +524,7 @@ The gates are the checks a change passes before it merges: format, lint, types, 
 They run in two stages:
 
 - At commit, on the changed files: `ruff check --fix`, `ruff format`, a secret scan of the staged diff and the merge-conflict check.
-- At push, on everything: every other hook. `uvx prek run --stage pre-push --all-files` runs this stage by hand, and `.github/workflows/ci.yml` runs the same command on every pull request and on `main`, builds the image, starts the stack the README starts, plays the e2e flows and reports one check, `Check`. Plain `uvx prek run --all-files` runs the commit stage only.
+- At push, on everything: every other hook. `uvx prek run --stage pre-push --all-files` runs this stage by hand, and `.github/workflows/ci.yml` runs the same command, builds the image, starts the stack the README starts, plays the e2e flows and reports one check, `Check`. It runs on a pull request that is ready for review, on `main` and every Monday. A draft runs no lane and `Check` passes on it with nothing checked; marking the pull request ready starts them. Plain `uvx prek run --all-files` runs the commit stage only.
 
 A hook limited to `stages: [pre-commit]` never runs in CI, so a new hook keeps the default stages. The commit-msg hook holds a commit subject to the one pattern in `.github/workflows/pr-title.yml`, which the `Conventional title` check also reads.
 
@@ -559,7 +559,7 @@ The exported host and port win over the ones in `.env`, and the port is the valu
 
 ## Verification
 
-No unit tests. Verification is running the real system: the gates above day to day, and the flows in `e2e/`, which start the compose stack and check it from outside. A flow is one user journey through the public HTTP surface. CI plays every flow on each pull request and on `main`; they are too slow for a hook. By hand, a flow is due after a change to its journey's behaviour, a migration, the compose files or the deploy files. `e2e/README.md` holds the rules for writing one.
+No unit tests. Verification is running the real system: the gates above day to day, and the flows in `e2e/`, which start the compose stack and check it from outside. A flow is one user journey through the public HTTP surface. CI plays every flow on each pull request that is ready for review, on `main` and once a week; they are too slow for a hook. By hand, a flow is due after a change to its journey's behaviour, a migration, the compose files or the deploy files. `e2e/README.md` holds the rules for writing one.
 
 When work is split into steps, every step passes the gates. A step that changes behaviour runs the flows it touches, once. After the last step the same flows run once more, from the base of the work, so steps that pass alone are also checked together. With a suite this small, "the flows it touches" is often all of them. Beyond that, the whole suite runs only when asked. When a flow fails, run it on the base before blaming the step: red there too means it was already broken.
 

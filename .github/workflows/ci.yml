@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: "0 5 * * 1"
 
 permissions:
   contents: read
@@ -16,6 +19,7 @@ concurrency:
 jobs:
   hooks:
     name: Hooks
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     steps:
@@ -34,6 +38,7 @@ jobs:
 
   image:
     name: Image build
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
@@ -50,6 +55,7 @@ jobs:
 
   flows:
     name: End-to-end flows
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 40
     steps:
@@ -110,12 +116,13 @@ jobs:
     runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 2
     steps:
-      - name: Every needed job passed
+      - name: Every needed job passed, or was skipped because the pull request is a draft
         env:
           NEEDS: ${{ toJSON(needs) }}
+          EXPECTED_RESULT: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'skipped' || 'success' }}
         run: |
           jq --raw-output 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
-          jq --exit-status 'all(.[]; .result == "success")' <<<"$NEEDS" >/dev/null || {
-            echo "::error::A needed job did not pass."
+          jq --exit-status --arg expected_result "$EXPECTED_RESULT" 'all(.[]; .result == $expected_result)' <<<"$NEEDS" >/dev/null || {
+            echo "::error::A needed job did not end as $EXPECTED_RESULT."
             exit 1
           }
