@@ -1,0 +1,226 @@
+from pathlib import Path
+import sys
+import tempfile
+
+from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
+
+from flow_report import FlowCheckFailedError, FlowReport
+from http_client import HttpReply, send_http_request, send_json_request
+from software_passkey import AuthenticationOptions, RegistrationOptions, SoftwarePasskey
+from stack_commands import (
+    ComposeStack,
+    StackCommandFailedError,
+    build_public_base_url,
+    destroy_stack,
+    find_free_local_port,
+    prepare_compose_stack,
+    read_database_value,
+    start_stack,
+)
+
+API_PREFIX = "/api/v1"
+ACCOUNT_SESSION_COOKIE_NAME = "__Host-starter_account_session"
+JOURNEY_USERNAME = "journey_user"
+COUNT_ACCOUNT_SESSIONS_QUERY = "SELECT count(*) FROM account_sessions;"
+
+
+class AccountReply(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    account_id: str
+    username: str
+
+
+class SignedInSession(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    account: AccountReply
+    session_cookie_value: str
+
+
+class AccountsApi:
+    def __init__(self, *, api_publish_port: int) -> None:
+        self.api_publish_port = api_publish_port
+        self.origin = build_public_base_url(api_publish_port)
+
+    def build_headers(self, *, session_cookie_value: str | None) -> dict[str, str]:
+        headers = {"Origin": self.origin, "Accept": "application/json"}
+        if session_cookie_value is not None:
+            headers["Cookie"] = f"{ACCOUNT_SESSION_COOKIE_NAME}={session_cookie_value}"
+        return headers
+
+    def post_json(self, path: str, *, json_body: dict[str, JsonValue], session_cookie_value: str | None) -> HttpReply:
+        return send_json_request(
+            f"{API_PREFIX}{path}",
+            api_publish_port=self.api_publish_port,
+            method="POST",
+            headers=self.build_headers(session_cookie_value=session_cookie_value),
+            json_body=json_body,
+        )
+
+    def read_current_account(self, session_cookie_value: str) -> HttpReply:
+        return send_http_request(
+            f"{API_PREFIX}/me",
+            api_publish_port=self.api_publish_port,
+            method="GET",
+            headers=self.build_headers(session_cookie_value=session_cookie_value),
+            body=None,
+        )
+
+
+def find_account_reply(reply: HttpReply) -> AccountReply | None:
+    try:
+        return AccountReply.model_validate_json(reply.body)
+    except ValidationError:
+        return None
+
+
+def require_signed_in_session(
+    flow_report: FlowReport, *, reply: HttpReply, expected_status_code: int, check_name: str
+) -> SignedInSession:
+    account = find_account_reply(reply)
+    session_cookie_value = reply.find_set_cookie_value(ACCOUNT_SESSION_COOKIE_NAME)
+    flow_report.require_check(
+        check_name,
+        passed=reply.status_code == expected_status_code
+        and account is not None
+        and account.username == JOURNEY_USERNAME
+        and bool(session_cookie_value),
+        detail=f"{reply.status_code}, account {'returned' if account else 'missing'}, "
+        f"session cookie {'set' if session_cookie_value else 'missing'}",
+    )
+    if account is None or session_cookie_value is None:
+        raise FlowCheckFailedError(check_name)
+    return SignedInSession(account=account, session_cookie_value=session_cookie_value)
+
+
+def sign_up(flow_report: FlowReport, *, accounts_api: AccountsApi, passkey: SoftwarePasskey) -> SignedInSession:
+    options_reply = accounts_api.post_json(
+        "/accounts/passkey/registration-options", json_body={"username": JOURNEY_USERNAME}, session_cookie_value=None
+    )
+    flow_report.require_check(
+        "registration options", passed=options_reply.status_code == 200, detail=str(options_reply.status_code)
+    )
+    registration_options = RegistrationOptions.model_validate_json(options_reply.body)
+    flow_report.require_check(
+        "registration options bind the passkey to localhost",
+        passed=registration_options.rp.id == "localhost",
+        detail=registration_options.rp.id,
+    )
+    registration_reply = accounts_api.post_json(
+        "/accounts/passkey/registration",
+        json_body={"credential": passkey.create_registration_credential(registration_options)},
+        session_cookie_value=None,
+    )
+    return require_signed_in_session(
+        flow_report, reply=registration_reply, expected_status_code=201, check_name="register the passkey"
+    )
+
+
+def check_current_account(
+    flow_report: FlowReport, *, accounts_api: AccountsApi, signed_in_session: SignedInSession, check_name: str
+) -> None:
+    current_account_reply = accounts_api.read_current_account(signed_in_session.session_cookie_value)
+    current_account = find_account_reply(current_account_reply)
+    flow_report.record_check(
+        check_name,
+        passed=current_account_reply.status_code == 200 and current_account == signed_in_session.account,
+        detail=f"{current_account_reply.status_code}, account {'matches' if current_account == signed_in_session.account else 'differs'}",
+    )
+
+
+def sign_out(
+    flow_report: FlowReport,
+    *,
+    accounts_api: AccountsApi,
+    signed_in_session: SignedInSession,
+    compose_stack: ComposeStack,
+) -> None:
+    sign_out_reply = accounts_api.post_json(
+        "/accounts/sign-out", json_body={}, session_cookie_value=signed_in_session.session_cookie_value
+    )
+    flow_report.record_check(
+        "sign out", passed=sign_out_reply.status_code == 204, detail=str(sign_out_reply.status_code)
+    )
+    rejected_reply = accounts_api.read_current_account(signed_in_session.session_cookie_value)
+    flow_report.record_check(
+        "current account rejects the signed-out cookie",
+        passed=rejected_reply.status_code == 401,
+        detail=str(rejected_reply.status_code),
+    )
+    session_count = read_database_value(COUNT_ACCOUNT_SESSIONS_QUERY, compose_stack=compose_stack)
+    flow_report.record_check(
+        "sign-out deleted the session row", passed=session_count == "0", detail=f"{session_count} session rows left"
+    )
+
+
+def sign_in(
+    flow_report: FlowReport, *, accounts_api: AccountsApi, passkey: SoftwarePasskey, expected_account: AccountReply
+) -> SignedInSession:
+    options_reply = accounts_api.post_json(
+        "/accounts/passkey/authentication-options", json_body={}, session_cookie_value=None
+    )
+    flow_report.require_check(
+        "authentication options", passed=options_reply.status_code == 200, detail=str(options_reply.status_code)
+    )
+    authentication_options = AuthenticationOptions.model_validate_json(options_reply.body)
+    authentication_reply = accounts_api.post_json(
+        "/accounts/passkey/authentication",
+        json_body={"credential": passkey.create_authentication_credential(authentication_options)},
+        session_cookie_value=None,
+    )
+    signed_in_session = require_signed_in_session(
+        flow_report,
+        reply=authentication_reply,
+        expected_status_code=200,
+        check_name="authenticate with the same passkey",
+    )
+    flow_report.record_check(
+        "authentication finds the signed-up account",
+        passed=signed_in_session.account == expected_account,
+        detail=signed_in_session.account.account_id,
+    )
+    return signed_in_session
+
+
+def walk_passkey_journey(flow_report: FlowReport, *, api_publish_port: int, compose_stack: ComposeStack) -> None:
+    accounts_api = AccountsApi(api_publish_port=api_publish_port)
+    passkey = SoftwarePasskey(origin=accounts_api.origin)
+    signed_up_session = sign_up(flow_report, accounts_api=accounts_api, passkey=passkey)
+    check_current_account(
+        flow_report,
+        accounts_api=accounts_api,
+        signed_in_session=signed_up_session,
+        check_name="current account after sign-up",
+    )
+    sign_out(flow_report, accounts_api=accounts_api, signed_in_session=signed_up_session, compose_stack=compose_stack)
+    signed_in_session = sign_in(
+        flow_report, accounts_api=accounts_api, passkey=passkey, expected_account=signed_up_session.account
+    )
+    check_current_account(
+        flow_report,
+        accounts_api=accounts_api,
+        signed_in_session=signed_in_session,
+        check_name="current account after sign-in",
+    )
+
+
+def run_accounts_flow() -> bool:
+    flow_report = FlowReport()
+    api_publish_port = find_free_local_port()
+    with tempfile.TemporaryDirectory() as environment_directory:
+        compose_stack = prepare_compose_stack(Path(environment_directory), api_publish_port=api_publish_port)
+        try:
+            start_stack(compose_stack)
+            walk_passkey_journey(flow_report, api_publish_port=api_publish_port, compose_stack=compose_stack)
+        except StackCommandFailedError as stack_error:
+            flow_report.record_check("stack", passed=False, detail=str(stack_error))
+        except FlowCheckFailedError:
+            pass
+        finally:
+            destroy_stack(compose_stack)
+    return flow_report.has_passed()
+
+
+if __name__ == "__main__":
+    sys.exit(0 if run_accounts_flow() else 1)

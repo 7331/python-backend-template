@@ -1,0 +1,87 @@
+from enum import StrEnum
+from functools import lru_cache
+import ipaddress
+from urllib.parse import quote
+
+from pydantic import Field, PostgresDsn, SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DATABASE_DRIVER_SCHEME = "postgresql+psycopg"
+DATABASE_NAME = "starterapp"
+DATABASE_OWNER_ROLE = "starterapp"
+APPLICATION_DATABASE_ROLE = "starterapp_application"
+
+
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]")
+
+
+class LogLevel(StrEnum):
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+
+
+class ApplicationSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="STARTER_", extra="ignore")
+
+    service_name: str = "starter-app"
+    trusted_proxy_addresses: str = ""
+    allowed_hosts: str = ""
+    log_level: LogLevel = LogLevel.INFO
+
+    def list_trusted_proxy_networks(self) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+        return tuple(
+            ipaddress.ip_network(network.strip())
+            for network in self.trusted_proxy_addresses.split(",")
+            if network.strip()
+        )
+
+    def list_allowed_hosts(self) -> tuple[str, ...]:
+        return (*LOCAL_HOSTS, *(host.strip() for host in self.allowed_hosts.split(",") if host.strip()))
+
+
+class ConnectionSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="STARTER_", extra="ignore")
+
+    database_host: str = "postgres"
+    database_port: int = 5432
+    application_database_password: SecretStr = Field(repr=False)
+
+    def build_database_url(self, *, role_name: str, role_password: SecretStr) -> SecretStr:
+        database_url = PostgresDsn.build(
+            scheme=DATABASE_DRIVER_SCHEME,
+            username=role_name,
+            password=quote(role_password.get_secret_value(), safe=""),
+            host=self.database_host,
+            port=self.database_port,
+            path=DATABASE_NAME,
+        )
+        return SecretStr(str(database_url))
+
+    def build_application_database_url(self) -> SecretStr:
+        return self.build_database_url(
+            role_name=APPLICATION_DATABASE_ROLE, role_password=self.application_database_password
+        )
+
+
+class MigrationConnectionSettings(ConnectionSettings):
+    postgres_password: SecretStr = Field(repr=False, validation_alias="POSTGRES_PASSWORD")
+
+    def build_migration_database_url(self) -> SecretStr:
+        return self.build_database_url(role_name=DATABASE_OWNER_ROLE, role_password=self.postgres_password)
+
+
+@lru_cache
+def read_application_settings() -> ApplicationSettings:
+    return ApplicationSettings()
+
+
+@lru_cache
+def read_connection_settings() -> ConnectionSettings:
+    return ConnectionSettings()
+
+
+@lru_cache
+def read_migration_connection_settings() -> MigrationConnectionSettings:
+    return MigrationConnectionSettings()

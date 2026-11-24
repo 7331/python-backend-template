@@ -10,5 +10,33 @@ updates:
       prefix: "build(deps)"
     groups:
       github-actions:
-        patterns:
-          - "*"
+        patterns: ["*"]
+
+  - package-ecosystem: uv
+    directories:
+      - /backend
+      - /e2e
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      python:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directories:
+      - /backend
+      - /deploy/postgres
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      base-images:
+        patterns: ["*"]

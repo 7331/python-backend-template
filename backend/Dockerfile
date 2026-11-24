@@ -1,0 +1,34 @@
+FROM ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 AS uv
+
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS python_dependencies_build
+COPY --from=uv /uv /usr/local/bin/uv
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never
+WORKDIR /app/backend
+RUN --mount=type=bind,source=backend/pyproject.toml,target=/app/backend/pyproject.toml \
+    --mount=type=bind,source=backend/uv.lock,target=/app/backend/uv.lock \
+    --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    uv sync --locked --no-dev --no-install-project
+
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS backend_runtime
+ENV PYTHONUNBUFFERED=1 \
+    TZ=UTC \
+    PATH="/app/backend/.venv/bin:${PATH}" \
+    PYTHONPATH=/app/backend
+ARG APT_EPOCH=2026-11-11
+RUN echo "apt epoch ${APT_EPOCH}" >/dev/null && apt-get update && \
+    apt-get upgrade -y --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/* && \
+    python -m pip uninstall -y pip
+WORKDIR /app/backend
+COPY --from=python_dependencies_build /app/backend/.venv /app/backend/.venv
+RUN --mount=type=bind,source=backend,target=/repository_backend \
+    cp -r /repository_backend/app /repository_backend/migrations /repository_backend/alembic.ini /repository_backend/pyproject.toml /app/backend/ && \
+    python -m compileall -q /app/backend/app /app/backend/migrations && \
+    chmod -R a+rX /app && \
+    useradd --system --uid 10001 --no-create-home starterapp
+USER starterapp
+EXPOSE 8000
+CMD ["python", "-m", "app", "serve-api"]

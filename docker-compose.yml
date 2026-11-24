@@ -1,0 +1,182 @@
+name: starter-app
+
+x-backend-image: &backend_image
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  image: starter-app/backend:local
+
+x-backend-hardening: &backend_hardening
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+x-backend-environment-file: &backend_environment_file
+  path: ${STARTER_ENVIRONMENT_FILE:-.env}
+  required: true
+
+x-database-owner-environment-file: &database_owner_environment_file
+  path: ${STARTER_DATABASE_OWNER_ENVIRONMENT_FILE:-.env.database-owner}
+  required: true
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    env_file:
+      - *database_owner_environment_file
+    restart: unless-stopped
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - max_connections=100
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-256MB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-768MB}
+      - -c
+      - work_mem=${POSTGRES_WORK_MEM:-8MB}
+      - -c
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-64MB}
+      - -c
+      - log_min_duration_statement=500ms
+      - -c
+      - log_parameter_max_length=0
+      - -c
+      - log_lock_waits=on
+      - -c
+      - log_temp_files=0
+      - -c
+      - log_autovacuum_min_duration=1s
+      - -c
+      - "log_line_prefix=%m [%p] %q%u@%d app=%a sqlstate=%e query_id=%Q "
+      - -c
+      - archive_mode=${POSTGRES_ARCHIVE_MODE:-off}
+      - -c
+      - archive_timeout=60
+      - -c
+      - archive_command=wal-g wal-push %p
+      - -c
+      - restore_command=wal-g wal-fetch %f %p
+    shm_size: 128mb
+    environment:
+      POSTGRES_DB: starterapp
+      POSTGRES_USER: starterapp
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    networks:
+      - backend_data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U starterapp -d starterapp"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  migrate:
+    <<: [*backend_image, *backend_hardening]
+    env_file:
+      - *backend_environment_file
+      - *database_owner_environment_file
+    restart: "no"
+    command: ["alembic", "upgrade", "heads"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend_data
+
+  api:
+    <<: [*backend_image, *backend_hardening]
+    env_file:
+      - *backend_environment_file
+    restart: unless-stopped
+    command: ["python", "-m", "app", "serve-api"]
+    stop_grace_period: 25s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${API_PUBLISH_PORT:-8000}:8000"
+    networks:
+      - backend_data
+      - backend_egress
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+
+  worker:
+    <<: [*backend_image, *backend_hardening]
+    env_file:
+      - *backend_environment_file
+    restart: unless-stopped
+    command: ["python", "-m", "app", "run-worker"]
+    stop_grace_period: 25s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - backend_data
+      - backend_egress
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.worker_healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+
+  object-storage:
+    image: versity/versitygw:v1.11.0@sha256:8319a530d08d537426e2f855bae5280709795dc73a3f0c347973ef915d6343c5
+    restart: unless-stopped
+    user: "10002:10002"
+    entrypoint: ["/bin/sh", "-c", "mkdir -p \"/var/tmp/$$OBJECT_STORAGE_BUCKET\" && exec versitygw posix /var/tmp"]
+    environment:
+      ROOT_ACCESS_KEY: ${STARTER_OBJECT_STORAGE_ACCESS_KEY_ID:?set STARTER_OBJECT_STORAGE_ACCESS_KEY_ID in the env file}
+      ROOT_SECRET_KEY: ${STARTER_OBJECT_STORAGE_SECRET_ACCESS_KEY:?set STARTER_OBJECT_STORAGE_SECRET_ACCESS_KEY in the env file}
+      OBJECT_STORAGE_BUCKET: ${STARTER_OBJECT_STORAGE_BUCKET:-starter-app}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    volumes:
+      - object_storage_data:/var/tmp
+    ports:
+      - "127.0.0.1:${OBJECT_STORAGE_PUBLISH_PORT:-9000}:7070"
+    networks:
+      - backend_egress
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "7070"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+
+networks:
+  backend_data:
+    internal: true
+  backend_egress: {}
+
+volumes:
+  postgres_data: {}
+  object_storage_data: {}

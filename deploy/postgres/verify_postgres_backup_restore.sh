@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repository_directory=$(cd "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+deploy_environment_file=${STARTER_ENVIRONMENT_FILE:?set STARTER_ENVIRONMENT_FILE to the deploy .env}
+backup_environment_file=${STARTER_POSTGRES_BACKUP_ENVIRONMENT_FILE:?set STARTER_POSTGRES_BACKUP_ENVIRONMENT_FILE to the backup env file}
+: "${STARTER_DATABASE_OWNER_ENVIRONMENT_FILE:?set STARTER_DATABASE_OWNER_ENVIRONMENT_FILE to the database owner env file}"
+export STARTER_ENVIRONMENT_FILE STARTER_POSTGRES_BACKUP_ENVIRONMENT_FILE STARTER_DATABASE_OWNER_ENVIRONMENT_FILE
+export POSTGRES_ARCHIVE_MODE=on
+restore_image=starter-app/postgres:production
+row_slack=${POSTGRES_RESTORE_DRILL_ROW_SLACK:-10}
+replay_timeout_seconds=${POSTGRES_RESTORE_DRILL_TIMEOUT_SECONDS:-1800}
+maximum_base_backup_age_hours=${POSTGRES_RESTORE_DRILL_MAXIMUM_BASE_BACKUP_AGE_HOURS:-26}
+archive_wait_seconds=${POSTGRES_BACKUP_ARCHIVE_WAIT_SECONDS:-180}
+restore_container=starter-app-restore-drill-$$
+
+fail() { printf 'restore drill failed: %s\n' "$1" >&2; exit 1; }
+
+exec 9<"${BASH_SOURCE[0]}"
+flock --nonblock 9 || fail "another restore drill holds the lock"
+
+remove_restore_container() { docker rm --force --volumes "$restore_container" >/dev/null 2>&1 || true; }
+trap remove_restore_container EXIT
+
+compose=(docker compose --env-file "$deploy_environment_file"
+  -f "$repository_directory/docker-compose.yml" -f "$repository_directory/deploy/docker-compose.production.yml")
+query_production() { "${compose[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -tAc "$1" | tr -d '\r'; }
+query_restored() {
+  docker exec "$restore_container" psql -U starterapp -d starterapp -v ON_ERROR_STOP=1 -tAc "$1" | tr -d '\r'
+}
+count_rows_query="SELECT format('%I.%I', table_schema, table_name) || ' ' ||
+  (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', table_schema, table_name), false, true, '')))[1]::text
+  FROM information_schema.tables
+  WHERE table_type = 'BASE TABLE' AND table_schema NOT IN ('pg_catalog', 'information_schema')
+    AND (SELECT relpersistence FROM pg_class WHERE oid = format('%I.%I', table_schema, table_name)::regclass) = 'p'
+  ORDER BY 1"
+alembic_revision_query="SELECT coalesce(string_agg(version_num, ' ' ORDER BY version_num), 'none') FROM alembic_version"
+
+newest_base_backup_age_hours=$("$repository_directory/deploy/postgres/read_newest_base_backup_age_hours.sh")
+[[ -n "$newest_base_backup_age_hours" ]] || fail "the bucket holds no base backup; run deploy/postgres/backup_postgres.sh"
+(( newest_base_backup_age_hours <= maximum_base_backup_age_hours )) ||
+  fail "the newest base backup is ${newest_base_backup_age_hours} hours old; the backup schedule has stopped"
+
+production_revision=$(query_production "$alembic_revision_query")
+declare -A production_row_counts
+while read -r table_name row_count; do
+  [[ -n "$table_name" ]] && production_row_counts[$table_name]=$row_count
+done < <(query_production "$count_rows_query")
+
+query_production "SELECT pg_create_restore_point('starter-app restore drill')" >/dev/null
+switched_wal_segment=$(query_production 'SELECT pg_walfile_name(pg_switch_wal())')
+switch_epoch=$(date -u +%s)
+while [[ "$(query_production "SELECT coalesce(last_archived_wal, '') FROM pg_stat_archiver")" < "$switched_wal_segment" ]]; do
+  (( $(date -u +%s) < switch_epoch + archive_wait_seconds )) ||
+    fail "WAL segment $switched_wal_segment was not archived within ${archive_wait_seconds}s"
+  sleep 2
+done
+
+restore_started_epoch=$(date -u +%s)
+docker run --detach --name "$restore_container" --network starter-app_backend_egress --user postgres \
+  --env-file "$backup_environment_file" --entrypoint sh "$restore_image" -c \
+  'mkdir -p -m 0700 "$PGDATA" && wal-g backup-fetch "$PGDATA" LATEST && touch "$PGDATA/recovery.signal" &&
+   exec docker-entrypoint.sh postgres -c archive_mode=off -c "restore_command=wal-g wal-fetch %f %p"' >/dev/null ||
+  fail "could not start the throwaway restore container"
+
+until [[ "$(query_restored 'SELECT NOT pg_is_in_recovery()' 2>/dev/null)" == t ]]; do
+  [[ "$(docker inspect --format '{{.State.Running}}' "$restore_container" 2>/dev/null)" == true ]] || {
+    docker logs --tail 20 "$restore_container" >&2 2>&1 || true
+    fail "the restore container stopped before recovery finished"
+  }
+  (( $(date -u +%s) < restore_started_epoch + replay_timeout_seconds )) ||
+    fail "WAL replay did not finish within ${replay_timeout_seconds}s"
+  sleep 2
+done
+restore_seconds=$(( $(date -u +%s) - restore_started_epoch ))
+
+restored_revision=$(query_restored "$alembic_revision_query")
+[[ "$restored_revision" == "$production_revision" ]] ||
+  fail "restored alembic revisions $restored_revision differ from production's $production_revision"
+printf 'alembic revisions: restored %s, production %s\n' "$restored_revision" "$production_revision"
+
+declare -A restored_row_counts
+while read -r table_name row_count; do
+  [[ -n "$table_name" ]] && restored_row_counts[$table_name]=$row_count
+done < <(query_restored "$count_rows_query")
+
+for table_name in "${!production_row_counts[@]}"; do
+  production_count=${production_row_counts[$table_name]}
+  restored_count=${restored_row_counts[$table_name]:-missing}
+  printf '%s: restored %s, production before the switch %s\n' "$table_name" "$restored_count" "$production_count"
+  [[ "$restored_count" != missing ]] || fail "$table_name is missing from the restored database"
+  (( restored_count - production_count <= row_slack && production_count - restored_count <= row_slack )) ||
+    fail "$table_name: restored $restored_count rows, production had $production_count"
+done
+
+last_replayed_commit=$(query_restored "SELECT coalesce(pg_last_xact_replay_timestamp()::text, 'none')")
+printf 'restore drill passed: usable after %ss, base backup %s hours old, last replayed commit %s, WAL switch at %s\n' \
+  "$restore_seconds" "$newest_base_backup_age_hours" "$last_replayed_commit" "$(date -u -d "@$switch_epoch" +%FT%TZ)"

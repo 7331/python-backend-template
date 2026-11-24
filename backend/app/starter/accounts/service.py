@@ -1,0 +1,339 @@
+from datetime import UTC, datetime, timedelta
+import hashlib
+import secrets
+from typing import Self
+
+from pydantic import JsonValue, SecretStr, ValidationError
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+from webauthn import (
+    generate_authentication_options,
+    generate_registration_options,
+    verify_authentication_response,
+    verify_registration_response,
+)
+from webauthn.helpers import (
+    base64url_to_bytes,
+    options_to_json_dict,
+    parse_authentication_credential_json,
+    parse_client_data_json,
+    parse_registration_credential_json,
+)
+from webauthn.helpers.exceptions import WebAuthnException
+from webauthn.helpers.structs import (
+    AuthenticatorSelectionCriteria,
+    ResidentKeyRequirement,
+    UserVerificationRequirement,
+)
+from webauthn.registration.verify_registration_response import VerifiedRegistration
+
+from app.shared import logging as log
+from app.shared.errors import AppError
+from app.shared.identifiers import generate_public_id
+from app.starter.accounts import log_events
+from app.starter.accounts.configuration import RelyingParty
+from app.starter.accounts.enums import ChallengePurpose
+from app.starter.accounts.errors import (
+    AccountNotFoundError,
+    AccountSessionExpiredError,
+    OriginMismatchError,
+    PasskeyAlreadyRegisteredError,
+    PasskeyChallengeExpiredError,
+    PasskeyCredentialIdTooLongError,
+    PasskeyResponseInvalidError,
+    PasskeyUnknownError,
+    SignInRequiredError,
+    UsernameTakenError,
+)
+from app.starter.accounts.models import (
+    ACCOUNT_PUBLIC_ID_PREFIX,
+    Account,
+    AccountPasskey,
+    AccountSession,
+    PasskeyChallenge,
+)
+from app.starter.accounts.repository import AccountRepository
+from app.starter.accounts.schemas import CredentialIdLengthParameters, PasskeyCredentialEnvelope
+from app.starter.accounts.types import (
+    AccountAccess,
+    AccountSummary,
+    ConsumedPasskeyChallenge,
+    StartedAccountSession,
+)
+
+logger = log.get_logger(__name__)
+
+ACCOUNT_SESSION_LIFETIME = timedelta(days=30)
+CHALLENGE_LIFETIME = timedelta(minutes=10)
+CEREMONY_TIMEOUT_MILLISECONDS = 300_000
+MAXIMUM_CREDENTIAL_ID_BYTES = 1023
+USER_HANDLE_BYTES = 32
+CHALLENGE_RANDOM_BYTES = 32
+SECRET_TOKEN_RANDOM_BYTES = 32
+SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def hash_secret_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def hash_challenge(challenge: bytes) -> str:
+    return hashlib.sha256(challenge).hexdigest()
+
+
+def read_signed_challenge(credential_json: dict[str, JsonValue]) -> bytes:
+    try:
+        credential_envelope = PasskeyCredentialEnvelope.model_validate(credential_json)
+    except ValidationError as validation_error:
+        raise PasskeyResponseInvalidError("the credential has no clientDataJSON") from validation_error
+    try:
+        client_data = parse_client_data_json(base64url_to_bytes(credential_envelope.response.client_data_json))
+    except (WebAuthnException, ValueError) as parse_error:
+        raise PasskeyResponseInvalidError("the credential's clientDataJSON is unreadable") from parse_error
+    if client_data.cross_origin is True:
+        raise PasskeyResponseInvalidError("the passkey prompt ran inside another site's page")
+    return client_data.challenge
+
+
+def present_account_summary(account: Account) -> AccountSummary:
+    return AccountSummary(
+        account_id=account.id,
+        account_public_id=account.public_id,
+        username=account.username,
+        created_at=account.created_at,
+    )
+
+
+class AccountService:
+    def __init__(self, *, repository: AccountRepository, relying_party: RelyingParty) -> None:
+        self.repository = repository
+        self.relying_party = relying_party
+
+    @classmethod
+    def on_session(cls, session: AsyncSession, *, relying_party: RelyingParty) -> Self:
+        return cls(repository=AccountRepository(session=session), relying_party=relying_party)
+
+    async def store_new_challenge(
+        self, *, purpose: ChallengePurpose, sign_up_username: str | None, sign_up_user_handle: bytes | None
+    ) -> bytes:
+        now = datetime.now(UTC)
+        await self.repository.delete_expired_challenges(now=now)
+        challenge = secrets.token_bytes(CHALLENGE_RANDOM_BYTES)
+        await self.repository.insert_challenge(
+            PasskeyChallenge(
+                challenge_hash=hash_challenge(challenge),
+                purpose=purpose,
+                expires_at=now + CHALLENGE_LIFETIME,
+                sign_up_username=sign_up_username,
+                sign_up_user_handle=sign_up_user_handle,
+            )
+        )
+        return challenge
+
+    async def consume_signed_challenge(
+        self, credential_json: dict[str, JsonValue], *, purpose: ChallengePurpose
+    ) -> ConsumedPasskeyChallenge:
+        try:
+            challenge = read_signed_challenge(credential_json)
+            challenge_row = await self.repository.consume_unexpired_challenge(
+                hash_challenge(challenge), purpose=purpose, now=datetime.now(UTC)
+            )
+            if challenge_row is None:
+                raise PasskeyChallengeExpiredError("the passkey prompt expired or was already used; try again")
+        except AppError as refusal:
+            log.emit(logger, event=log_events.PasskeyCeremonyRefused(ceremony=purpose.value, reason=refusal.code))
+            raise
+        return ConsumedPasskeyChallenge(
+            challenge=challenge,
+            sign_up_username=challenge_row.sign_up_username,
+            sign_up_user_handle=challenge_row.sign_up_user_handle,
+        )
+
+    def verify_new_passkey(self, credential_json: dict[str, JsonValue], *, challenge: bytes) -> VerifiedRegistration:
+        try:
+            verified_registration = verify_registration_response(
+                credential=parse_registration_credential_json(credential_json),
+                expected_challenge=challenge,
+                expected_rp_id=self.relying_party.relying_party_id,
+                expected_origin=self.relying_party.expected_origin,
+                require_user_verification=True,
+            )
+        except WebAuthnException as verification_error:
+            raise PasskeyResponseInvalidError("the passkey did not verify") from verification_error
+        if len(verified_registration.credential_id) > MAXIMUM_CREDENTIAL_ID_BYTES:
+            raise PasskeyCredentialIdTooLongError(
+                CredentialIdLengthParameters(maximum_bytes=MAXIMUM_CREDENTIAL_ID_BYTES)
+            )
+        return verified_registration
+
+    async def create_sign_up_options(self, username: str) -> dict[str, JsonValue]:
+        if await self.repository.is_username_taken(username):
+            log.emit(logger, event=log_events.PasskeyCeremonyRefused(ceremony="sign_up", reason="username_taken"))
+            raise UsernameTakenError("that username is taken; pick another")
+        user_handle = secrets.token_bytes(USER_HANDLE_BYTES)
+        challenge = await self.store_new_challenge(
+            purpose=ChallengePurpose.SIGN_UP, sign_up_username=username, sign_up_user_handle=user_handle
+        )
+        options = generate_registration_options(
+            rp_id=self.relying_party.relying_party_id,
+            rp_name=self.relying_party.relying_party_name,
+            user_id=user_handle,
+            user_name=username,
+            user_display_name=username,
+            challenge=challenge,
+            timeout=CEREMONY_TIMEOUT_MILLISECONDS,
+            authenticator_selection=AuthenticatorSelectionCriteria(
+                resident_key=ResidentKeyRequirement.REQUIRED,
+                user_verification=UserVerificationRequirement.REQUIRED,
+            ),
+        )
+        return options_to_json_dict(options)
+
+    async def sign_up(
+        self, credential_json: dict[str, JsonValue], *, consumed_challenge: ConsumedPasskeyChallenge, label: str
+    ) -> StartedAccountSession:
+        try:
+            if consumed_challenge.sign_up_username is None or consumed_challenge.sign_up_user_handle is None:
+                raise PasskeyChallengeExpiredError("the passkey prompt was not for a sign-up; try again")
+            verified_registration = self.verify_new_passkey(credential_json, challenge=consumed_challenge.challenge)
+            if await self.repository.find_passkey_by_credential_id(verified_registration.credential_id) is not None:
+                raise PasskeyAlreadyRegisteredError("this passkey is already registered")
+            try:
+                account = await self.repository.insert_account(
+                    Account(
+                        public_id=generate_public_id(ACCOUNT_PUBLIC_ID_PREFIX),
+                        username=consumed_challenge.sign_up_username,
+                        passkey_user_handle=consumed_challenge.sign_up_user_handle,
+                    )
+                )
+            except IntegrityError as duplicate_error:
+                raise UsernameTakenError("that username was just taken; pick another") from duplicate_error
+            transports = parse_registration_credential_json(credential_json).response.transports or []
+            account_passkey = await self.repository.insert_passkey(
+                AccountPasskey(
+                    account_id=account.id,
+                    credential_id=verified_registration.credential_id,
+                    public_key=verified_registration.credential_public_key,
+                    sign_count=verified_registration.sign_count,
+                    transports=[transport.value for transport in transports],
+                    label=label.strip(),
+                )
+            )
+        except AppError as refusal:
+            log.emit(logger, event=log_events.PasskeyCeremonyRefused(ceremony="sign_up", reason=refusal.code))
+            raise
+        log.emit(logger, event=log_events.AccountSignedUp(account_id=account.id))
+        return await self.start_account_session(account, account_passkey=account_passkey)
+
+    async def create_sign_in_options(self) -> dict[str, JsonValue]:
+        challenge = await self.store_new_challenge(
+            purpose=ChallengePurpose.SIGN_IN, sign_up_username=None, sign_up_user_handle=None
+        )
+        options = generate_authentication_options(
+            rp_id=self.relying_party.relying_party_id,
+            challenge=challenge,
+            timeout=CEREMONY_TIMEOUT_MILLISECONDS,
+            allow_credentials=[],
+            user_verification=UserVerificationRequirement.REQUIRED,
+        )
+        return options_to_json_dict(options)
+
+    async def sign_in_with_passkey(
+        self, credential_json: dict[str, JsonValue], *, consumed_challenge: ConsumedPasskeyChallenge
+    ) -> StartedAccountSession:
+        try:
+            try:
+                credential = parse_authentication_credential_json(credential_json)
+            except WebAuthnException as parse_error:
+                raise PasskeyResponseInvalidError("the passkey response is malformed") from parse_error
+            account_passkey = await self.repository.find_passkey_by_credential_id(credential.raw_id)
+            if account_passkey is None:
+                raise PasskeyUnknownError("this passkey is not registered here")
+            try:
+                verified_authentication = verify_authentication_response(
+                    credential=credential,
+                    expected_challenge=consumed_challenge.challenge,
+                    expected_rp_id=self.relying_party.relying_party_id,
+                    expected_origin=self.relying_party.expected_origin,
+                    credential_public_key=account_passkey.public_key,
+                    credential_current_sign_count=account_passkey.sign_count,
+                    require_user_verification=True,
+                )
+            except WebAuthnException as verification_error:
+                raise PasskeyResponseInvalidError("the passkey did not verify") from verification_error
+            account = await self.repository.find_account(account_passkey.account_id)
+            if account is None:
+                raise PasskeyUnknownError("this passkey's account is gone")
+            if credential.response.user_handle != account.passkey_user_handle:
+                raise PasskeyResponseInvalidError("the passkey's user handle is not its account's")
+        except AppError as refusal:
+            log.emit(logger, event=log_events.PasskeyCeremonyRefused(ceremony="sign_in", reason=refusal.code))
+            raise
+        await self.repository.record_passkey_use(
+            account_passkey.id, sign_count=verified_authentication.new_sign_count, used_at=datetime.now(UTC)
+        )
+        return await self.start_account_session(account, account_passkey=account_passkey)
+
+    async def start_account_session(
+        self, account: Account, *, account_passkey: AccountPasskey
+    ) -> StartedAccountSession:
+        now = datetime.now(UTC)
+        await self.repository.delete_expired_sessions(now=now)
+        session_token = secrets.token_urlsafe(SECRET_TOKEN_RANDOM_BYTES)
+        account_session = await self.repository.insert_session(
+            AccountSession(
+                token_hash=hash_secret_token(session_token),
+                account_passkey_id=account_passkey.id,
+                expires_at=now + ACCOUNT_SESSION_LIFETIME,
+            )
+        )
+        log.emit(
+            logger,
+            event=log_events.AccountSignedIn(
+                account_id=account.id, account_passkey_id=account_passkey.id, account_session_id=account_session.id
+            ),
+        )
+        return StartedAccountSession(
+            session_token=SecretStr(session_token),
+            expires_at=account_session.expires_at,
+            account=present_account_summary(account),
+        )
+
+    async def sign_out(self, session_token: SecretStr) -> None:
+        account_session_id = await self.repository.delete_session_by_token_hash(
+            hash_secret_token(session_token.get_secret_value())
+        )
+        if account_session_id is not None:
+            log.emit(logger, event=log_events.AccountSignedOut(account_session_id=account_session_id))
+
+    async def authenticate_account(
+        self, session_token: SecretStr | None, *, request_method: str, origin_header: str | None
+    ) -> AccountAccess:
+        if session_token is None:
+            raise SignInRequiredError("sign in with your passkey")
+        account_session = await self.repository.find_unexpired_session(
+            hash_secret_token(session_token.get_secret_value()), now=datetime.now(UTC)
+        )
+        account = (
+            await self.repository.find_account_of_passkey(account_session.account_passkey_id)
+            if account_session is not None
+            else None
+        )
+        if account_session is None or account is None:
+            raise AccountSessionExpiredError("the sign-in expired or was ended; sign in with your passkey again")
+        if request_method.upper() not in SAFE_HTTP_METHODS and (
+            origin_header is None or origin_header.lower() != self.relying_party.expected_origin
+        ):
+            raise OriginMismatchError("a signed-in change must come from this site's own pages")
+        return AccountAccess(
+            account_id=account.id,
+            account_public_id=account.public_id,
+            username=account.username,
+            account_session_id=account_session.id,
+        )
+
+    async def get_account_summary(self, account_id: int) -> AccountSummary:
+        account = await self.repository.find_account(account_id)
+        if account is None:
+            raise AccountNotFoundError("the account is gone")
+        return present_account_summary(account)

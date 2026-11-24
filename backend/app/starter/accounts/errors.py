@@ -1,0 +1,62 @@
+from app.shared.errors import AppError, ConflictError, ForbiddenError, NotFoundError, UnauthorizedError
+from app.starter.accounts.schemas import CredentialIdLengthParameters
+from app.starter.accounts.types import ACCOUNT_SESSION_COOKIE_NAME
+
+
+class PasskeyResponseInvalidError(AppError):
+    code = "passkey_response_invalid"
+    status_code = 400
+
+
+class PasskeyChallengeExpiredError(AppError):
+    code = "passkey_challenge_expired"
+    status_code = 400
+
+
+class PasskeyCredentialIdTooLongError(AppError):
+    code = "passkey_credential_id_too_long"
+    status_code = 400
+    parameters_model = CredentialIdLengthParameters
+
+    def __init__(self, parameters: CredentialIdLengthParameters) -> None:
+        super().__init__(
+            f"the passkey's credential id is longer than {parameters.maximum_bytes} bytes", parameters=parameters
+        )
+
+
+class PasskeyAlreadyRegisteredError(ConflictError):
+    code = "passkey_already_registered"
+
+
+class UsernameTakenError(ConflictError):
+    code = "username_taken"
+
+
+class PasskeyUnknownError(UnauthorizedError):
+    code = "passkey_unknown"
+
+
+class AccountSessionExpiredError(UnauthorizedError):
+    pass
+
+
+class SignInRequiredError(UnauthorizedError):
+    pass
+
+
+class OriginMismatchError(ForbiddenError):
+    code = "origin_mismatch"
+
+
+class AccountNotFoundError(NotFoundError):
+    code = "account_not_found"
+
+
+class CookieChallengedUnauthorizedError(UnauthorizedError):
+    response_headers = (
+        ("WWW-Authenticate", f'Cookie realm="starter-app", cookie-name="{ACCOUNT_SESSION_COOKIE_NAME}"'),
+    )
+
+    def __init__(self, session_refusal: UnauthorizedError) -> None:
+        super().__init__(session_refusal.message, parameters=session_refusal.parameters)
+        self.code = session_refusal.code

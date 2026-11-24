@@ -1,0 +1,43 @@
+services:
+  api:
+    image: starter-app/backend:production
+    mem_limit: 512m
+    ports: !reset []
+    networks:
+      reverse_proxy:
+        aliases:
+          - starter-app-api
+
+  worker:
+    image: starter-app/backend:production
+    mem_limit: 512m
+
+  migrate:
+    image: starter-app/backend:production
+    mem_limit: 512m
+
+  postgres:
+    build:
+      context: deploy/postgres
+    image: starter-app/postgres:production
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-1g}
+    stop_grace_period: 60s
+    env_file:
+      - path: ${STARTER_POSTGRES_BACKUP_ENVIRONMENT_FILE:?set STARTER_POSTGRES_BACKUP_ENVIRONMENT_FILE to the backup env file (mode 600, outside the checkout)}
+        required: true
+    environment:
+      PGHOST: /var/run/postgresql
+      PGUSER: starterapp
+      PGDATABASE: starterapp
+    networks:
+      - backend_data
+      - backend_egress
+
+  object-storage:
+    profiles:
+      - local-object-storage
+
+networks:
+  reverse_proxy:
+    name: ${REVERSE_PROXY_NETWORK:?REVERSE_PROXY_NETWORK is required}
+    external: true

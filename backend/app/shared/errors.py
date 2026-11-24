@@ -1,0 +1,80 @@
+from typing import ClassVar
+
+from app.shared.schemas import ErrorDetail, ErrorParameters, RequestBodyLimitParameters
+
+
+class AppError(Exception):
+    code: str = "internal_error"
+    status_code: int = 500
+    retry_after_seconds: int | None = None
+    response_headers: ClassVar[tuple[tuple[str, str], ...]] = ()
+    parameters_model: ClassVar[type[ErrorParameters] | None] = None
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        retry_after_seconds: int | None = None,
+        details: tuple[ErrorDetail, ...] = (),
+        parameters: ErrorParameters | None = None,
+    ) -> None:
+        self.message = message if message is not None else self.code
+        if retry_after_seconds is not None:
+            self.retry_after_seconds = retry_after_seconds
+        self.details = details
+        self.parameters = parameters
+        super().__init__(self.message)
+
+
+class InvalidInputError(AppError):
+    code = "validation_error"
+    status_code = 400
+
+
+class MalformedBodyError(AppError):
+    code = "malformed_body"
+    status_code = 400
+
+
+class RateLimitedError(AppError):
+    code = "rate_limited"
+    status_code = 429
+
+
+class HostNotAllowedError(AppError):
+    code = "host_not_allowed"
+    status_code = 400
+
+
+class RequestBodyTooLargeError(AppError):
+    code = "request_body_too_large"
+    status_code = 413
+    parameters_model = RequestBodyLimitParameters
+
+    def __init__(self, parameters: RequestBodyLimitParameters) -> None:
+        super().__init__(f"the request body is larger than {parameters.maximum_bytes} bytes", parameters=parameters)
+
+
+class NotReadyError(AppError):
+    code = "not_ready"
+    status_code = 503
+
+
+class NotFoundError(AppError):
+    code = "not_found"
+    status_code = 404
+
+
+class UnauthorizedError(AppError):
+    code = "unauthorized"
+    status_code = 401
+
+
+class ConflictError(AppError):
+    code = "conflict"
+    status_code = 409
+
+
+class ForbiddenError(AppError):
+    code = "forbidden"
+    status_code = 403
