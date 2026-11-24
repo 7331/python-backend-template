@@ -4,15 +4,15 @@ version = "0.1.0"
 description = "End-to-end flows of starter-app against a running compose stack"
 requires-python = ">=3.15,<3.16"
 dependencies = [
-    "cbor2==6.1.5",
+    "cbor2==6.3.0",
     "cryptography==50.0.2",
-    "pydantic==2.14.2",
+    "pydantic==2.14.3",
 ]
 
 [dependency-groups]
 dev = [
     "ruff>=0.17.3",
-    "ty==0.0.104",
+    "ty==0.0.105",
 ]
 
 [tool.uv]
