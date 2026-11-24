@@ -30,7 +30,6 @@ Sources for the layout: [fastapi-best-practices](https://github.com/zhanymkanov/
     app/
       __main__.py cli.py         `python -m app`: one typer command per process role
       main.py                    create_app: routes, middlewares, exception handlers
-      option_routers.py          the routers of template options newer than accounts; main.py's router lines stay the app's
       worker.py                  run_worker: the job kinds, SIGTERM, the claim loop
       worker_healthcheck.py      the worker container's healthcheck
       openapi_contract.py        error codes in the OpenAPI document
@@ -72,8 +71,7 @@ The `layers` contract in `[tool.importlinter]` (`backend/pyproject.toml`), top t
 flowchart TD
     cli["app.cli"] --> main["app.main | app.worker"]
     main --> healthcheck["app.worker_healthcheck"]
-    healthcheck --> option_routers["app.option_routers"]
-    option_routers --> contract["app.openapi_contract"]
+    healthcheck --> contract["app.openapi_contract"]
     contract --> middlewares["app.allowed_host_middleware | app.rate_limit_middleware | app.request_body_limit_middleware | app.request_log_middleware | app.unhandled_error_middleware"]
     middlewares --> lifespan["app.lifespan"]
     lifespan --> files["app.starter.files, which imports the accounts domain's access check"]
@@ -340,7 +338,7 @@ sequenceDiagram
 - Every file route takes `AccountAccessDependency`: without a session it answers 401. The `files` row carries `account_id`, and reading, signing a download and deleting all look the file up by id and owner together, so another account gets the same 404 `file_not_found` as for an id that does not exist. An upload is signed for a key under the account's own `pending/<account id>/`, so one account cannot store another's upload either.
 - `files.account_id` is `ON DELETE RESTRICT`: Postgres refuses to delete an account that still owns files. A cascade would drop the rows and leave the objects in the bucket with nothing pointing at them. Code that deletes an account deletes its files through `FileService` first.
 - Signing an upload URL has its own budget, `FILE_UPLOAD_URLS_PER_WINDOW_PER_IP` (10 a minute per address, the passkey writes' number), beside the general 120 in `app/rate_limit_middleware.py`. Each signed URL lets its holder put up to 10 MiB under `pending/` until the lifecycle rule runs, so the general budget alone would let one address park 1.2 GiB a minute; this one caps it at 100 MiB. It is kept in Postgres like the others, so API replicas share it.
-- To drop the sample, delete the package, its router in `app/option_routers.py`, its budget in `app/rate_limit_middleware.py`, its import in `migrations/env.py` and its lines in `pyproject.toml`, and drop the table in an `app` revision.
+- To drop the sample, delete the package, its router in `app/main.py`, its budget in `app/rate_limit_middleware.py`, its import in `migrations/env.py` and its lines in `pyproject.toml`, and drop the table in an `app` revision.
 
 ## Connection packages and external HTTP APIs
 

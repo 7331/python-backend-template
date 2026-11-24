@@ -5,7 +5,6 @@ from app.configuration import read_application_settings
 from app.lifespan.api_lifespan import run_api_lifespan
 from app.lifespan.dependencies import ResourcesDependency
 from app.openapi_contract import install_openapi_contract, name_operation_after_handler
-from app.option_routers import add_option_routers
 from app.rate_limit_middleware import RateLimitRequestsMiddleware
 from app.request_body_limit_middleware import RequestBodyLimitMiddleware
 from app.request_log_middleware import RequestLogMiddleware
@@ -15,6 +14,7 @@ from app.shared.logging import configure_logging
 from app.shared.schemas import HealthResponse
 from app.starter.accounts.configuration import read_relying_party
 from app.starter.accounts.router import accounts_router
+from app.starter.files.router import files_router
 from app.unhandled_error_middleware import UnhandledErrorMiddleware
 
 
@@ -38,10 +38,10 @@ def create_app() -> FastAPI:
         openapi_url=None,
         generate_unique_id_function=name_operation_after_handler,
     )
-    add_option_routers(application)
     application.add_api_route("/ready", read_readiness, methods=["GET", "HEAD"], include_in_schema=False)
     application.add_api_route("/health", read_health, methods=["GET", "HEAD"], include_in_schema=False)
     application.include_router(accounts_router)
+    application.include_router(files_router)
     application.add_middleware(RateLimitRequestsMiddleware)
     application.add_middleware(RequestBodyLimitMiddleware)
     application.add_middleware(

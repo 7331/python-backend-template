@@ -176,7 +176,6 @@ layers = [
     "cli",
     "main | worker",
     "worker_healthcheck",
-    "option_routers",
     "openapi_contract",
     "allowed_host_middleware | rate_limit_middleware | request_body_limit_middleware | request_log_middleware | unhandled_error_middleware",
     "lifespan",
@@ -208,7 +207,7 @@ Two domains import each other. Let a third, higher domain own the orchestration,
 [[tool.importlinter.contracts]]
 name = "Routes and entry modules never import a model or repository"
 type = "forbidden"
-source_modules = ["app.**.router", "app.**.dependencies", "app.**.cli", "app.main", "app.cli", "app.option_routers"]
+source_modules = ["app.**.router", "app.**.dependencies", "app.**.cli", "app.main", "app.cli"]
 forbidden_modules = ["app.**.models", "app.**.repository"]
 allow_indirect_imports = "true"
 broken_contract_guidance = """
