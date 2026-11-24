@@ -51,13 +51,15 @@ these lists, because CI only runs the template whole.
   `backend/app/rate_limit_middleware.py` (the upload URL budget), `backend/migrations/env.py`,
   `backend/pyproject.toml` (`botocore`, two layers, three contracts), `backend/vulture_whitelist.py`,
   `docker-compose.yml` and `deploy/docker-compose.production.yml` (the `object-storage` service and its volume),
-  `e2e/stack_commands.py`, `e2e/README.md`, `.env.example`, `.github/workflows/ci.yml` and `BACKEND-API.md`.
+  `backend/tools/check_function_names.py` (the verb `copy`), `e2e/stack_commands.py`, `e2e/README.md`,
+  `.env.example`, `.github/workflows/ci.yml` and `BACKEND-API.md`.
 - **Worker.** Delete `backend/app/infrastructure/task_queue/`, `backend/app/starter/queue_probe/`,
   `backend/app/worker.py`, `backend/app/worker_healthcheck.py`,
   `backend/migrations/template_versions/worker_0001_job_queue.py` and `e2e/worker_flow.py`. Cut from
   `backend/app/cli.py` (two commands), `backend/app/lifespan/composition.py` and `resources.py` (the process
   resources), `backend/migrations/env.py`, `backend/pyproject.toml` (four layers, one contract),
-  `backend/vulture_whitelist.py`, `docker-compose.yml`, `compose.watch.yml` and
+  `backend/vulture_whitelist.py`, `backend/tools/check_file_kinds.py` (the `jobs` kind) and
+  `check_function_names.py` beside it (the queue's verbs), `docker-compose.yml`, `compose.watch.yml` and
   `deploy/docker-compose.production.yml` (the `worker` service), `e2e/README.md`, `.env.example`,
   `.github/workflows/ci.yml` and `BACKEND-API.md`.
 - **Accounts.** Remove the `files` sample domain first (the object storage list, keeping the client package if the
@@ -104,8 +106,8 @@ For day-to-day work without an image rebuild, see Local development in `BACKEND-
 uvx prek run --stage pre-push --all-files
 ```
 
-CI runs the same command and plays the flows in `e2e/`: on a pull request once it is ready for review, on `main` and
-every Monday. It runs on `ubuntu-latest` unless the repository variable `CI_RUNNER` names other runner labels as JSON.
+CI runs the same command on a pull request once it is ready for review, on `main` and every Monday. The flows in
+`e2e/` are no pull request gate: CI plays them every Monday and when someone starts the workflow by hand. It runs on `ubuntu-latest` unless the repository variable `CI_RUNNER` names other runner labels as JSON.
 
 ## Deploy
 
