@@ -4,16 +4,20 @@
 
 A few lines. Name the shortcomings of the approach too.
 
-## Verified
+## Reproduced on
 
-What ran and what it showed: the gates (`uvx prek run --stage pre-push --all-files`), an e2e flow, a request against the running stack.
+For a fix: the commit, the command or e2e flow, and what it showed before the change. `Not run: <why>` is allowed. A batch gives one line per `Fixes #N`. Delete this section when the change fixes nothing.
+
+## Proof on this head
+
+The command or e2e flow run on this branch's last commit, and what it showed. `Not run: <why>` is allowed. A batch gives one line per `Fixes #N`.
 
 - [ ] `backend/openapi.json` is current: the OpenAPI hook passed and left no diff.
 - [ ] A revision that drops or rewrites data does so on purpose. Migrations only go forward, and a mistake is fixed by the next revision.
 
-## Not run
+## How verified
 
-What was not checked, and why.
+Which CI lanes cover the change (`Hooks`, `Image build`, `End-to-end flows`), plus what was done by hand: a request against the running stack, a second stack, a restore drill. Say what was not checked, and why.
 
 ## Flow
 
