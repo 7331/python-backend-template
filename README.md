@@ -39,53 +39,8 @@ The block rewrites this file too: replace its top with the project's own words a
 
 ## Remove a part you do not need
 
-Accounts, the worker and object storage each need Postgres, and the `files` sample domain needs accounts, so remove
-in this order: object storage, worker, accounts, Postgres. For each part, delete the paths, cut the part's block from
-each file named, then run `uv lock` in `backend/` and `e2e/`, rewrite `backend/openapi.json` and run the gates: ruff,
-vulture, deptry, import-linter and the setting-key check name most of what a cut left behind. Nothing in CI checks
-these lists, because CI only runs the template whole.
-
-- **Object storage.** Delete `backend/app/infrastructure/object_storage/`, `backend/app/starter/files/`,
-  `backend/migrations/template_versions/object_storage_0001_files_table.py` and `e2e/object_storage_flow.py`. Cut from
-  `backend/app/main.py` (the router), `backend/app/lifespan/composition.py` and `resources.py` (the client),
-  `backend/app/rate_limit_middleware.py` (the upload URL budget), `backend/migrations/env.py`,
-  `backend/pyproject.toml` (`botocore`, two layers, three contracts), `backend/vulture_whitelist.py`,
-  `docker-compose.yml` and `deploy/docker-compose.production.yml` (the `object-storage` service and its volume),
-  `backend/tools/check_function_names.py` (the verb `copy`), `e2e/stack_commands.py`, `e2e/README.md`,
-  `.env.example`, `.github/workflows/ci.yml` and `BACKEND-API.md`.
-- **Worker.** Delete `backend/app/infrastructure/task_queue/`, `backend/app/starter/queue_probe/`,
-  `backend/app/worker.py`, `backend/app/worker_healthcheck.py`,
-  `backend/migrations/template_versions/worker_0001_job_queue.py` and `e2e/worker_flow.py`. Cut from
-  `backend/app/cli.py` (two commands), `backend/app/lifespan/composition.py` and `resources.py` (the process
-  resources), `backend/migrations/env.py`, `backend/pyproject.toml` (four layers, one contract),
-  `backend/vulture_whitelist.py`, `backend/tools/check_file_kinds.py` (the `jobs` kind) and
-  `check_function_names.py` beside it (the queue's verbs), `docker-compose.yml`, `compose.watch.yml` and
-  `deploy/docker-compose.production.yml` (the `worker` service), `e2e/README.md`, `.env.example`,
-  `.github/workflows/ci.yml` and `BACKEND-API.md`.
-- **Accounts.** Remove the `files` sample domain first (the object storage list, keeping the client package if the
-  project will store files), or rewrite it without an owner. Delete `backend/app/starter/accounts/`,
-  `backend/app/shared/identifiers.py`, `backend/migrations/template_versions/accounts_0001_account_tables.py`,
-  `e2e/accounts_flow.py` and `e2e/software_passkey.py`. Cut from `backend/app/main.py` (the router and the relying
-  party's host), `backend/app/lifespan/api_lifespan.py`, `backend/app/rate_limit_middleware.py` (the passkey budget),
-  `backend/app/shared/errors.py` (the four errors nothing raises any more), `backend/migrations/env.py`,
-  `backend/pyproject.toml` (`webauthn`, one layer, one contract), `e2e/pyproject.toml` (`cbor2`, `cryptography`),
-  `e2e/stack_commands.py`, `e2e/README.md`, `.env.example`, `.github/workflows/ci.yml` and `BACKEND-API.md`. With no
-  domain left, vulture reports the scaffolding the first domain will use (`API_PREFIX`, `ApiRequest`,
-  `describe_error_responses`, `DatabaseSession`, the ORM mixins): list it in `backend/vulture_whitelist.py` until then.
-- **Postgres.** Delete `backend/alembic.ini`, `backend/migrations/`, `backend/app/infrastructure/postgres/`,
-  `log_events.py`, `models.py` and `postgres_limiter_store.py` in `backend/app/infrastructure/rate_limit/`,
-  `backend/app/shared/blocking_executor.py`, `backend/tools/check_migrations.py`, `deploy/postgres/`,
-  `compose.postgres-loopback.yml` and `.env.database-owner.example`. Cut from `backend/app/configuration.py` (the
-  connection settings), `composition.py`, `dependencies.py` and `resources.py` in `backend/app/lifespan/`
-  (`Resources` keeps an `InMemoryRateLimiter`), `backend/app/main.py` (`/ready` answers like `/health`),
-  `backend/app/rate_limit_middleware.py` (the in-memory check is not awaited), `backend/app/shared/errors.py`
-  (`NotReadyError`), `backend/app/shared/logging.py`, `backend/Dockerfile`, `backend/Dockerfile.dockerignore`,
-  `backend/pyproject.toml`, `backend/vulture_whitelist.py`, `backend/tools/check_file_kinds.py` (the `models` and
-  `repository` kinds), `check_function_names.py`, `check_constant_homes.py` and `run_house_rules.py` beside it (the
-  `migrations` directory), `.pre-commit-config.yaml`, `deploy/deploy.sh`, `docker-compose.yml`,
-  `deploy/docker-compose.production.yml`, `e2e/stack_commands.py`, `e2e/README.md`, `.env.example`, `.gitignore`,
-  `.github/dependabot.yml`, `.github/pull_request_template.md`, `.github/workflows/ci.yml`, this file and
-  `BACKEND-API.md`. The request budgets then live in process memory, which means one API replica.
+The template comes whole. `REMOVE-A-PART.md` lists, part by part, what to delete and what to cut for a project
+without object storage, the worker, accounts or Postgres.
 
 ## Run it
 

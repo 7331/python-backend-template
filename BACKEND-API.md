@@ -9,6 +9,7 @@ Sources for the layout: [fastapi-best-practices](https://github.com/zhanymkanov/
 ```
 .
   BACKEND-API.md                 this file
+  REMOVE-A-PART.md               what to delete and cut for a project without one of the parts
   .env.example                   every key of the API's env file (copy to .env)
   .env.database-owner.example    the superuser password, for postgres and migrate only
   .pre-commit-config.yaml        every gate, run by prek
