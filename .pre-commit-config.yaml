@@ -100,8 +100,20 @@ repos:
         language: system
         pass_filenames: false
         files: ^backend/(app/|tools/check_file_kinds\.py$)
+      - id: backend-service-returns
+        name: no service returns a fixed-length tuple
+        entry: uv run --directory backend python tools/check_service_returns.py
+        language: system
+        pass_filenames: false
+        files: ^backend/(app/|tools/check_service_returns\.py$)
+      - id: backend-constant-homes
+        name: a constant lives in the module that reads it, unless two other modules read it
+        entry: uv run --directory backend python tools/check_constant_homes.py
+        language: system
+        pass_filenames: false
+        files: ^backend/.*\.py$
       - id: backend-setting-keys
-        name: every setting key is in an example env file
+        name: every setting key has one settings class and is in an example env file
         entry: uv run --directory backend python tools/check_setting_keys.py
         language: system
         pass_filenames: false

@@ -46,7 +46,6 @@ from app.starter.accounts.errors import (
     UsernameTakenError,
 )
 from app.starter.accounts.models import (
-    ACCOUNT_PUBLIC_ID_PREFIX,
     Account,
     AccountPasskey,
     AccountSession,
@@ -63,6 +62,7 @@ from app.starter.accounts.types import (
 
 logger = log.get_logger(__name__)
 
+ACCOUNT_PUBLIC_ID_PREFIX = "acc_"
 ACCOUNT_SESSION_LIFETIME = timedelta(days=30)
 CHALLENGE_LIFETIME = timedelta(minutes=10)
 CEREMONY_TIMEOUT_MILLISECONDS = 300_000

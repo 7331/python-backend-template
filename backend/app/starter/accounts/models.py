@@ -8,7 +8,6 @@ from app.infrastructure.postgres.models import Base, SurrogateId, Timestamps, bu
 from app.starter.accounts.enums import ChallengePurpose
 
 ACCOUNT_USERNAME_MAXIMUM_LENGTH = 32
-ACCOUNT_PUBLIC_ID_PREFIX = "acc_"
 
 
 class Account(SurrogateId, Timestamps, Base):

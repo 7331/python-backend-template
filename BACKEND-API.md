@@ -197,7 +197,7 @@ A file exists only when something runs, opens, injects, configures or raises thr
 - The package that owns the table or the API owns the model. No other package redefines it.
 - The service gets what it needs through its constructor, by keyword (`AccountService(repository=..., relying_party=...)`). It never reads `app.state`, module globals or `Resources`, so it runs the same in a request, a worker loop and a CLI command. A `classmethod` such as `on_session(session)` builds it for the common case.
 - Sub-services and repositories are built once in `__init__`, not per call. A heavy collaborator only some calls need is built when first needed.
-- A service returns typed models. A tuple or dict return is a missing model.
+- A service returns typed models. A tuple or dict return is a missing model, and `tools/check_service_returns.py` refuses a fixed-length tuple.
 - The service owns domain decisions. Routers and CLI commands parse input, call one service method, and shape the output or error.
 
 ### Calling another domain
@@ -369,7 +369,7 @@ Every setting lives in a pydantic-settings `BaseSettings` in a `configuration.py
 - Each settings getter is `@lru_cache` ([FastAPI settings](https://fastapi.tiangolo.com/advanced/settings/#creating-the-settings-only-once-with-lru-cache)).
 - Services get settings values by keyword from the lifespan or a dependency (`AccountService.on_session(session, relying_party=...)`) and never read settings themselves.
 - Nothing else reads the environment. ruff's banned-api refuses `os.environ` and `os.getenv`, and `migrations/env.py` builds its DSN from `read_migration_connection_settings()`.
-- The example env files list every key (`tools/check_setting_keys.py`). Compose's `environment:` never repeats one. Each secret reaches only the containers that use it (see Containers):
+- One settings class declares each key, and the example env files list every key (`tools/check_setting_keys.py`). Compose's `environment:` never repeats one. Each secret reaches only the containers that use it (see Containers):
   - `.env.example` becomes the API's env file (`STARTER_ENVIRONMENT_FILE`, default `.env`). It holds the application role's password and also feeds compose interpolation.
   - `.env.database-owner.example` becomes the database owner env file (`STARTER_DATABASE_OWNER_ENVIRONMENT_FILE`, default `.env.database-owner`). It holds `POSTGRES_PASSWORD`. The API never gets the superuser password.
 
@@ -461,7 +461,7 @@ Every I/O path is `async`. A library that only blocks is wrapped once, in its in
 
 - Exceptions propagate. Catch only a known error you can name, and turn it into an `AppError` at the boundary. A raised error never copies exception text.
 - A parameter is optional only when the domain has no value for it.
-- No constants or wrappers without a second caller.
+- No wrappers without a second caller. A module-level constant lives in the module that reads it, and moves to a shared module only when two other modules read it (`tools/check_constant_homes.py`).
 - Models we build go through keyword constructors, which ty checks. `model_validate` and `model_validate_json` read only data from outside (request bodies, external APIs), never our own rows or objects, so nothing uses `from_attributes`. JSON is never parsed with `isinstance` checks.
 - The response bases are `strict=True`, because our own outputs are built with the declared types and a coerced value is a bug ([strict mode](https://pydantic.dev/docs/validation/latest/concepts/strict_mode/)).
 - No `model_copy(update=...)`, because neither ty nor Pydantic checks the update dict. No call-site `include=` or `exclude=` on wire output. A different shape is a different model ([FastAPI response model](https://fastapi.tiangolo.com/tutorial/response-model/#response-model-include-and-response-model-exclude)).
@@ -537,6 +537,7 @@ What the config does not say:
 - Every semgrep rule has a violation in `semgrep/tests/known_bad.py`, and every ty rule set to `error` has one in `ty_fixture/known_bad.py`. The hooks fail when a rule finds nothing there, so a new rule adds its violation in the same change.
 - The semgrep hook also fails on a parse error, because semgrep otherwise skips a file it can't parse, such as one with `lazy import`, without a word.
 - The dead-code check counts a field of an `ApiResponse` or `LogEvent` subclass and a `Mapped[...]` column as used, because serialization and the ORM read it, and skips routes, typer commands and exception handlers by decorator. Anything else that is only reached by name at runtime goes in `backend/vulture_whitelist.py`. Delete a whitelist line once the name is used.
+- `tools/check_service_returns.py` and `tools/check_constant_homes.py` each hold an allowlist, empty today. An entry that no longer breaks its rule fails the hook, so a list only shrinks.
 - The OpenAPI hook rewrites `backend/openapi.json` from the code, so a route change missing from the committed file fails it by leaving the file modified.
 - `uv audit` checks every locked backend dependency against [OSV](https://osv.dev/) and needs the network. When a fix is younger than the 7-day `exclude-newer` cooldown, add an `exclude-newer-package` entry for that package in `backend/pyproject.toml`, run `uv lock --upgrade-package <name>`, and delete the entry once the cooldown has passed.
 
