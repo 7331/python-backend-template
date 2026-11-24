@@ -22,7 +22,7 @@ DOMAIN_FILE_KINDS = frozenset(
         "types",
     }
 )
-INFRASTRUCTURE_FILE_KINDS = DOMAIN_FILE_KINDS | {"auth", "client", "store"}
+INFRASTRUCTURE_FILE_KINDS = DOMAIN_FILE_KINDS | {"authentication", "client", "store"}
 
 
 def is_file_of_kind(module_path: Path, *, allowed_kinds: frozenset[str]) -> bool:

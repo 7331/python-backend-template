@@ -345,7 +345,7 @@ A connection package owns one external system's configuration and client:
 ```
 app/infrastructure/<name>_api/
   configuration.py   base URL, key or credentials (SecretStr), timeouts
-  auth.py            an httpx.Auth, only when the credential is not a static header
+  authentication.py  an httpx.Auth, only when the credential is not a static header
   client.py          <Name>ApiClient: one method per endpoint, typed arguments, returns models
   schemas.py         request and response bodies as Pydantic models
   errors.py          <Name>ApiError and the few cases callers handle (NotFound, RateLimited)
@@ -479,7 +479,7 @@ Every I/O path is `async`. A library that only blocks is wrapped once, in its in
 Code reads like a sentence at the call site: `await account_service.get_account_summary(account_id)`, not `await svc.get(a)`.
 
 - A function takes at most one positional subject besides `self`. Everything after it is keyword-only (ruff `PLR0917` with `max-positional-args = 1`). Signatures a library fixes are the exception, each with a reason on the suppression.
-- Names are long form, whole words: `configuration`, not `cfg`, and `error`, not `e` (`semgrep/naming-rules.yaml`).
+- Names are long form, whole words: `configuration`, not `cfg`, `error`, not `e`, and `authentication`, not `auth` (`semgrep/naming-rules.yaml`). File names follow it too: `authentication.py`, not `auth.py`.
 - A name doesn't repeat the type: `accounts`, not `account_list`.
 - Functions are verb plus object and say what they return. `get_` returns one thing or raises, `find_` returns one thing or `None`, `list_` returns a list and `count_` an int. `insert_`, `delete_` and `send_` change something. `tools/check_function_names.py` holds those four to their return types outside routers, and refuses a first word that is not in its `ALLOWED_VERBS`. A new verb joins that list in the same change.
 - Wire models put the thing first and the role last. A request body ends in `Request`. A response ends in `Response` or names its part, never `View`.
