@@ -1,6 +1,7 @@
 # e2e
 
-End-to-end flows against a real compose stack, run by hand when a change needs them. These are the rules for a flow.
+End-to-end flows against a real compose stack. CI plays them all on each pull request and on `main`; by hand, run the
+ones a change needs. These are the rules for a flow.
 `BACKEND-API.md` (Verification) says when one is due.
 
 - One flow is one user journey through the public HTTP surface, start to finish, named `<journey>_flow.py`. No file
@@ -14,8 +15,9 @@ End-to-end flows against a real compose stack, run by hand when a change needs t
 - Each flow starts its own stack from `docker-compose.yml` alone (`--file`), under a separate compose project with fresh passwords for both
   database roles and a free local port, prints one `PASS` or `FAIL` line per assertion, and removes the stack
   and its volumes, also after a failure. The exit code is 0 only when every assertion passed.
-- A flow is due after a change to its journey, a migration, the compose files or the deploy files. It is never a CI or
-  hook gate. A flow that only pinned old details gets deleted or rewritten.
+- By hand, a flow is due after a change to its journey, a migration, the compose files or the deploy files. It is never
+  a hook. A new flow gets its own step in the `flows` job of `.github/workflows/ci.yml`. A flow that only pinned old
+  details gets deleted or rewritten.
 - In work split into steps, a step that changes behaviour runs the flows it touches, and the last step runs them once
   more from the base of the work. A failing flow is run on the base first: red there too means the step did not break
   it.
