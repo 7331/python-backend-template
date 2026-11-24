@@ -1,0 +1,17 @@
+[Unit]
+Description=starter-app Postgres base backups and restore drills
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=exec
+Environment=STARTER_ENVIRONMENT_FILE=/etc/starter-app/deploy.env
+Environment=STARTER_DATABASE_OWNER_ENVIRONMENT_FILE=/etc/starter-app/database-owner.env
+Environment=STARTER_POSTGRES_BACKUP_ENVIRONMENT_FILE=/etc/starter-app/postgres-backup.env
+ExecStart=/opt/starter-app/deploy/postgres/run_postgres_backup_schedule.sh
+Restart=on-failure
+RestartSec=60
+SyslogIdentifier=starter-app-postgres-backup-schedule
+
+[Install]
+WantedBy=multi-user.target

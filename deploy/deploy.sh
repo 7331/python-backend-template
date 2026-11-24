@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_directory=$(cd "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+deploy_environment_file=${STARTER_ENVIRONMENT_FILE:?set STARTER_ENVIRONMENT_FILE to the deploy .env (mode 600, outside the checkout)}
+export STARTER_ENVIRONMENT_FILE="$deploy_environment_file"
+
+[[ -f "$deploy_environment_file" ]] || { echo "refusing: $deploy_environment_file does not exist (copy .env.example)" >&2; exit 78; }
+backup_environment_file=${STARTER_POSTGRES_BACKUP_ENVIRONMENT_FILE:?set STARTER_POSTGRES_BACKUP_ENVIRONMENT_FILE to the backup env file (mode 600, outside the checkout)}
+[[ -f "$backup_environment_file" ]] || { echo "refusing: $backup_environment_file does not exist (copy deploy/postgres/backup.env.example)" >&2; exit 78; }
+[[ "$(stat -c %a "$backup_environment_file")" == 600 ]] || { echo "refusing: $backup_environment_file must be mode 600" >&2; exit 78; }
+database_owner_environment_file=${STARTER_DATABASE_OWNER_ENVIRONMENT_FILE:?set STARTER_DATABASE_OWNER_ENVIRONMENT_FILE to the database owner env file (mode 600, outside the checkout)}
+[[ -f "$database_owner_environment_file" ]] || { echo "refusing: $database_owner_environment_file does not exist (copy .env.database-owner.example)" >&2; exit 78; }
+[[ "$(stat -c %a "$database_owner_environment_file")" == 600 ]] || { echo "refusing: $database_owner_environment_file must be mode 600" >&2; exit 78; }
+export STARTER_POSTGRES_BACKUP_ENVIRONMENT_FILE="$backup_environment_file" POSTGRES_ARCHIVE_MODE=on
+export STARTER_DATABASE_OWNER_ENVIRONMENT_FILE="$database_owner_environment_file"
+
+compose=(docker compose --env-file "$deploy_environment_file"
+  -f "$repository_directory/docker-compose.yml" -f "$repository_directory/deploy/docker-compose.production.yml")
+
+backup_schedule_unit=starter-app-postgres-backup-schedule.service
+maximum_base_backup_age_hours=${POSTGRES_RESTORE_DRILL_MAXIMUM_BASE_BACKUP_AGE_HOURS:-26}
+backup_schedule_warnings=()
+warn_about_backup_schedule() {
+  backup_schedule_warnings+=("$1")
+  printf 'WARNING: %s\n' "$1" >&2
+}
+
+systemctl is-active --quiet "$backup_schedule_unit" ||
+  warn_about_backup_schedule "$backup_schedule_unit is not running, so only deploys take base backups and nothing runs the restore drill; run: systemctl enable --now $repository_directory/deploy/postgres/$backup_schedule_unit"
+if [[ -n "$("${compose[@]}" ps --quiet --status running postgres)" ]]; then
+  if newest_base_backup_age_hours=$("$repository_directory/deploy/postgres/read_newest_base_backup_age_hours.sh"); then
+    if [[ -z "$newest_base_backup_age_hours" ]]; then
+      warn_about_backup_schedule "the bucket held no base backup before this deploy"
+    elif (( newest_base_backup_age_hours > maximum_base_backup_age_hours )); then
+      warn_about_backup_schedule "the newest base backup before this deploy was $newest_base_backup_age_hours hours old (limit $maximum_base_backup_age_hours): the backup schedule had stopped or was failing; read: journalctl --unit $backup_schedule_unit"
+    fi
+  else
+    warn_about_backup_schedule "could not read the base backup list from the running postgres container"
+  fi
+fi
+
+"${compose[@]}" build --pull
+"${compose[@]}" up -d --wait --wait-timeout 300 --remove-orphans
+"$repository_directory/deploy/postgres/backup_postgres.sh"
+"${compose[@]}" ps --format '{{.Service}} {{.Status}}'
+echo "deployed $(git -C "$repository_directory" rev-parse HEAD)"
+if [[ -n "${backup_schedule_warnings[*]}" ]]; then
+  printf 'WARNING: %s\n' "${backup_schedule_warnings[@]}" >&2
+  exit 1
+fi

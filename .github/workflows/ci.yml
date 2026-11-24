@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "ci-${{ github.event_name == 'pull_request' && format('pull-request-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}"
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  hooks:
+    name: Hooks
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          cache-dependency-glob: |
+            backend/uv.lock
+            e2e/uv.lock
+      - name: Run every hook of the pre-push stage on every file
+        run: uvx prek run --stage pre-push --all-files
+
+  image:
+    name: Image build
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 20
+    env:
+      IMAGE_TAG: ci-backend:run-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the backend image without pushing
+        run: docker buildx build --load --file backend/Dockerfile --tag "$IMAGE_TAG" .
+      - name: Remove this run's image
+        if: always()
+        run: docker image rm --force "$IMAGE_TAG"
+
+  flows:
+    name: End-to-end flows
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          cache-dependency-glob: e2e/uv.lock
+      - name: Write the env files the README names, with fresh secrets
+        run: |
+          cp .env.example .env
+          cp .env.database-owner.example .env.database-owner
+          chmod 600 .env .env.database-owner
+          sed --in-place "s/^STARTER_APPLICATION_DATABASE_PASSWORD=$/&$(openssl rand -hex 24)/" .env
+          sed --in-place "s/^STARTER_OBJECT_STORAGE_ACCESS_KEY_ID=$/&$(openssl rand -hex 12)/" .env
+          sed --in-place "s/^STARTER_OBJECT_STORAGE_SECRET_ACCESS_KEY=$/&$(openssl rand -hex 24)/" .env
+          sed --in-place "s/^POSTGRES_PASSWORD=$/&$(openssl rand -hex 24)/" .env.database-owner
+          grep --quiet --extended-regexp '^STARTER_APPLICATION_DATABASE_PASSWORD=[0-9a-f]{48}$' .env
+          grep --quiet --extended-regexp '^STARTER_OBJECT_STORAGE_ACCESS_KEY_ID=[0-9a-f]{24}$' .env
+          grep --quiet --extended-regexp '^STARTER_OBJECT_STORAGE_SECRET_ACCESS_KEY=[0-9a-f]{48}$' .env
+          grep --quiet --extended-regexp '^POSTGRES_PASSWORD=[0-9a-f]{48}$' .env.database-owner
+      - name: Build the image and start the stack the README starts
+        run: |
+          docker compose up --detach --build --wait --wait-timeout 300
+          docker compose ps --format '{{.Service}} {{.Status}}'
+      - name: Read /health
+        run: curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8000/health
+      - name: Print container logs
+        if: failure()
+        run: |
+          docker compose ps --all
+          docker compose logs --no-color --timestamps
+      - name: Remove the stack and its volumes
+        if: always()
+        run: docker compose down --volumes --remove-orphans
+      - name: Run the health flow
+        working-directory: e2e
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: uv run --locked python health_flow.py
+      - name: Run the accounts flow
+        working-directory: e2e
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: uv run --locked python accounts_flow.py
+      - name: Run the worker flow
+        working-directory: e2e
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: uv run --locked python worker_flow.py
+      - name: Run the object storage flow
+        working-directory: e2e
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: uv run --locked python object_storage_flow.py
+      - name: Keep each flow's evidence folder
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-evidence-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/starter-app-e2e
+          retention-days: 14
+
+  check:
+    name: Check
+    if: always()
+    needs:
+      - hooks
+      - image
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 2
+    steps:
+      - name: Every needed job passed, or was skipped because the pull request is a draft
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          EXPECTED_RESULT: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'skipped' || 'success' }}
+        run: |
+          jq --raw-output 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq --exit-status --arg expected_result "$EXPECTED_RESULT" 'all(.[]; .result == $expected_result)' <<<"$NEEDS" >/dev/null || {
+            echo "::error::A needed job did not end as $EXPECTED_RESULT."
+            exit 1
+          }

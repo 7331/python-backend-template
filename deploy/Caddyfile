@@ -1,0 +1,11 @@
+starter-app.example.com {
+	encode zstd gzip
+	request_body {
+		max_size 64KB
+	}
+	reverse_proxy starter-app-api:8000 {
+		header_up X-Real-IP {client_ip}
+		lb_try_duration 30s
+		lb_try_interval 250ms
+	}
+}

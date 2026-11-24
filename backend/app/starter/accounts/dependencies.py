@@ -1,0 +1,57 @@
+from typing import Annotated
+
+from fastapi import Depends, Request, Security
+from fastapi.security import APIKeyCookie
+from pydantic import JsonValue, SecretStr
+
+from app.lifespan.dependencies import DatabaseSession, ResourcesDependency
+from app.shared.errors import UnauthorizedError
+from app.starter.accounts.configuration import read_relying_party
+from app.starter.accounts.enums import ChallengePurpose
+from app.starter.accounts.errors import CookieChallengedUnauthorizedError
+from app.starter.accounts.service import AccountService
+from app.starter.accounts.types import ACCOUNT_SESSION_COOKIE_NAME, AccountAccess, ConsumedPasskeyChallenge
+
+account_session_cookie_scheme = APIKeyCookie(
+    name=ACCOUNT_SESSION_COOKIE_NAME,
+    scheme_name="accountSession",
+    description="The session cookie a passkey sign-in sets. A change also needs Origin to be this site's own.",
+    auto_error=False,
+)
+
+
+def get_account_service(session: DatabaseSession) -> AccountService:
+    return AccountService.on_session(session, relying_party=read_relying_party())
+
+
+AccountServiceDependency = Annotated[AccountService, Depends(get_account_service)]
+
+
+async def consume_signed_challenge_in_own_transaction(
+    credential_json: dict[str, JsonValue], *, purpose: ChallengePurpose, resources: ResourcesDependency
+) -> ConsumedPasskeyChallenge:
+    async with resources.database.session_factory() as challenge_session, challenge_session.begin():
+        return await get_account_service(challenge_session).consume_signed_challenge(credential_json, purpose=purpose)
+
+
+def read_account_session_token(
+    session_cookie: Annotated[str | None, Security(account_session_cookie_scheme)],
+) -> SecretStr | None:
+    return SecretStr(session_cookie) if session_cookie else None
+
+
+AccountSessionTokenDependency = Annotated[SecretStr | None, Depends(read_account_session_token)]
+
+
+async def require_account_access(
+    request: Request, *, session_token: AccountSessionTokenDependency, account_service: AccountServiceDependency
+) -> AccountAccess:
+    try:
+        return await account_service.authenticate_account(
+            session_token, request_method=request.method, origin_header=request.headers.get("origin")
+        )
+    except UnauthorizedError as session_refusal:
+        raise CookieChallengedUnauthorizedError(session_refusal) from session_refusal
+
+
+AccountAccessDependency = Annotated[AccountAccess, Depends(require_account_access)]

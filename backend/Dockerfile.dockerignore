@@ -1,0 +1,9 @@
+**/.git
+**/.venv
+**/__pycache__
+**/.ruff_cache
+**/.import_linter_cache
+**/.env
+**/.env.database-owner
+e2e
+deploy

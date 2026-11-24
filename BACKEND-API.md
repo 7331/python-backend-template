@@ -1,0 +1,581 @@
+# Backend API
+
+`backend/` is an async Python 3.15 service on FastAPI, PostgreSQL and external HTTP APIs, with typed logs, a typer CLI and uv, run with Docker Compose. Each business domain is one package. Each external system has one thin layer. Each process (the API, a worker, a CLI command) opens its resources once and passes them down.
+
+Sources for the layout: [fastapi-best-practices](https://github.com/zhanymkanov/fastapi-best-practices), [Polar](https://github.com/polarsource/polar/tree/main/server/polar), [Netflix Dispatch](https://github.com/Netflix/dispatch/tree/master/src/dispatch), and Cosmic Python's [repository](https://www.cosmicpython.com/book/chapter_02_repository.html) and [service layer](https://www.cosmicpython.com/book/chapter_04_service_layer.html).
+
+## Directory tree
+
+```
+.
+  BACKEND-API.md                 this file
+  .env.example                   every key of the API's env file (copy to .env)
+  .env.database-owner.example    the superuser password, for postgres and migrate only
+  .pre-commit-config.yaml        every gate, run by prek
+  .github/                       CI, the title check, the image scan, Dependabot, issue forms, the `main` ruleset
+  docker-compose.yml             postgres, migrate, api and worker, plus a local bucket server
+  compose.watch.yml              local only: compose watch for api, named with `--file`
+  compose.postgres-loopback.yml  local only: Postgres on 127.0.0.1 for a backend run on the host
+  backend/
+    Dockerfile                   one image for every process
+    pyproject.toml               dependencies, tool settings, import-linter contracts
+    openapi.json                 the committed API contract
+    alembic.ini
+    migrations/                  env.py, template_versions/ (the revisions the template came with), versions/ (the app's)
+    semgrep/                     structural and naming rules ruff can't express, tests/ with a violation of each
+    ty_fixture/                  a violation of each ty rule set to error
+    vulture_whitelist.py         names only reached at runtime
+    tools/                       dump_openapi.py and the gate scripts
+    app/
+      __main__.py cli.py         `python -m app`: one typer command per process role
+      main.py                    create_app: routes, middlewares, exception handlers
+      worker.py                  run_worker: the job kinds, SIGTERM, the claim loop
+      worker_healthcheck.py      the worker container's healthcheck
+      openapi_contract.py        error codes in the OpenAPI document
+      allowed_host_middleware.py   refuses a Host the service does not answer for
+      request_body_limit_middleware.py   64 KB request body cap
+      rate_limit_middleware.py   per-IP request budgets
+      request_log_middleware.py  one log line per request
+      unhandled_error_middleware.py   an unexpected exception becomes a 500
+      log_events.py              the app's own typed log events
+      configuration.py           app-wide settings
+      lifespan/                  Resources, the API lifespan, wiring, request dependencies
+      starter/   one package per domain
+        accounts/                passkey sign-up and sign-in, cookie sessions
+        queue_probe/             a sample job kind that proves the queue; delete it with the app's first real job
+        files/                   a sample domain: presigned upload, stored file, presigned download, delete, each file its account's own
+      infrastructure/
+        postgres/                Database, ORM Base, mixins, enum builder
+        task_queue/              the job queue: the jobs table, enqueue_job, JobPayload, JobQueueWorker
+        object_storage/          the S3 client: presigned URLs, head, copy, delete
+        rate_limit/              the GCRA limiter: budgets in Postgres, in memory while it is down
+      shared/                    AppError, the error envelope, logging, request helpers, BlockingExecutor
+  deploy/
+    deploy.sh                    build and start production, then take a base backup
+    docker-compose.production.yml   memory limits, the reverse proxy's network
+    Caddyfile                    the reverse proxy: 64 KB body cap, X-Real-IP, retries while api restarts
+    postgres/                    WAL-G image, backup, restore drill, schedule loop and its systemd unit
+  e2e/                           end-to-end flows, played by hand and by CI once a week
+```
+
+Packages under `infrastructure/` and `starter/` are flat siblings, never nested, with no module beside them. A big domain splits into sibling packages. A domain's `router.py` and `cli.py` sit beside its `service.py`, so one feature lives in one folder.
+
+## Diagrams
+
+### Import direction
+
+The `layers` contract in `[tool.importlinter]` (`backend/pyproject.toml`), top to bottom. A module may import any layer below its own and none above. Modules joined by `|` may not import each other. So a domain never imports a router, and infrastructure never imports a domain. Entry points (routers, CLI commands, worker loops) only translate input and output.
+
+```mermaid
+flowchart TD
+    cli["app.cli"] --> main["app.main | app.worker"]
+    main --> healthcheck["app.worker_healthcheck"]
+    healthcheck --> contract["app.openapi_contract"]
+    contract --> middlewares["app.allowed_host_middleware | app.rate_limit_middleware | app.request_body_limit_middleware | app.request_log_middleware | app.unhandled_error_middleware"]
+    middlewares --> lifespan["app.lifespan"]
+    lifespan --> files["app.starter.files, which imports the accounts domain's access check"]
+    files --> events["app.log_events"]
+    events --> domains["app.starter.accounts, then app.starter.queue_probe"]
+    domains --> limiter["app.infrastructure.rate_limit"]
+    limiter --> object_storage["app.infrastructure.object_storage"]
+    object_storage --> task_queue["app.infrastructure.task_queue"]
+    task_queue --> postgres["app.infrastructure.postgres"]
+    postgres --> base["app.shared | app.configuration"]
+    domains -. "allowed upward: app.lifespan.dependencies" .-> lifespan
+```
+
+- The one upward import is `app.lifespan.dependencies` (`ResourcesDependency`, `DatabaseSession`), which any module may import.
+- `acyclic_siblings` over `app.starter`: a domain may import a lower domain's service and read types, never in a cycle.
+- `forbidden`: `router`, `dependencies`, `cli`, `app.main` and `app.cli` never import a `models` or `repository` module directly. They call a service.
+- `forbidden`: `models` never imports FastAPI or Starlette.
+- `protected`, one per domain: only `app.starter.accounts` imports its own `models` and `repository`.
+- `forbidden`: `app.worker`, `app.worker_healthcheck`, `app.infrastructure.task_queue` and every `jobs.py` never import FastAPI, Starlette or a `dependencies` module, directly or through another module. A worker has no request.
+- `forbidden` and `protected`: only `app.infrastructure.object_storage` imports botocore, its settings and its log events. A domain imports its `client`, `types` and `errors`.
+- Each contract's `broken_contract_guidance` says how to fix a break. A new domain takes its own place in `layers` and adds its own `protected` contract.
+
+### A request
+
+Middlewares in the order a request meets them (`app/main.py` adds them in reverse). The response returns the same way.
+
+```mermaid
+flowchart TD
+    client["Client"] --> proxy["Caddy, production only: 64 KB body cap, sets X-Real-IP, redials for 30 s while api restarts"]
+    proxy --> correlation["ServerMintedCorrelationIdMiddleware: adds X-Request-ID"]
+    correlation --> request_log["RequestLogMiddleware: one line per request"]
+    request_log --> unhandled["UnhandledErrorMiddleware: unexpected exception to 500 internal_error"]
+    unhandled --> allowed_host["AllowedHostMiddleware"]
+    allowed_host -- "foreign Host" --> host_refusal["400 host_not_allowed"]
+    allowed_host --> body_limit["RequestBodyLimitMiddleware"]
+    body_limit -- "over 64 KB" --> body_refusal["413 request_body_too_large"]
+    body_limit --> rate_limit["RateLimitRequestsMiddleware: per-IP budget, /health and /ready exempt"]
+    rate_limit -- "over budget" --> refusal["429 rate_limited"]
+    rate_limit --> handlers["Exception handlers: AppError, HTTPException, validation errors to the envelope"]
+    handlers --> route["router.py handler"]
+    route -. "Depends" .-> dependencies["dependencies.py: DatabaseSession opens one transaction"]
+    route --> service["service.py"]
+    service --> repository["repository.py"]
+    repository --> database[("Postgres, as the application role")]
+```
+
+`DatabaseSession` commits when the handler returns and rolls back when it raises, before the response is sent.
+
+### Containers
+
+`docker-compose.yml` plus `deploy/docker-compose.production.yml`. Start order: `postgres` healthy, then `migrate` (`alembic upgrade heads`) to completion, then `api`, which is healthy once `/ready` answers, and `worker`.
+
+```mermaid
+flowchart LR
+    api_env["API env file (.env)"] -. env_file .-> api
+    api_env -. env_file .-> migrate
+    api_env -. env_file .-> worker
+    worker -- "backend_data (internal)" --> postgres
+    worker -- "backend_egress" --> outside
+    owner_env["database owner env file (.env.database-owner)"] -. env_file .-> migrate
+    owner_env -. env_file .-> postgres
+    backup_env["backup env file, production only"] -. env_file .-> postgres
+    local["127.0.0.1:API_PUBLISH_PORT, local only"] --> api
+    proxy["Caddy on REVERSE_PROXY_NETWORK, production only"] -- "starter-app-api:8000" --> api
+    api -- "backend_data (internal)" --> postgres[("postgres")]
+    migrate -- "backend_data (internal)" --> postgres
+    api -- "backend_egress" --> outside["external APIs"]
+    api -- "backend_egress" --> object_storage[("object-storage, local only; a real bucket in production")]
+    local_client["127.0.0.1:OBJECT_STORAGE_PUBLISH_PORT, local only"] --> object_storage
+    postgres -- "backend_egress, production only" --> bucket[("S3 bucket: WAL and base backups")]
+```
+
+### Deploy and backups
+
+```mermaid
+flowchart TD
+    deploy["deploy/deploy.sh"] --> refuse["Refuses unless the three env files exist, owner and backup files mode 600"]
+    refuse --> tripwire["Warns when the backup schedule unit is not active or the newest base backup is too old"]
+    tripwire --> build["compose build --pull"]
+    build --> up["compose up -d --wait, with POSTGRES_ARCHIVE_MODE=on: migrate runs alembic upgrade heads, api answers /ready"]
+    up --> backup["deploy/postgres/backup_postgres.sh"]
+    backup -. "after a warning" .-> warned["Repeats the warnings and exits 1"]
+    loop["systemd unit: run_postgres_backup_schedule.sh"] -- "every day" --> backup
+    loop -- "every week" --> drill["verify_postgres_backup_restore.sh"]
+    backup --> switch["Restore point, WAL switch, wait until pg_stat_archiver reports it"]
+    switch --> push["wal-g backup-push"]
+    push --> verify["wal-g wal-verify integrity timeline, fails on a lost segment"]
+    archiver["postgres archive_command: wal-g wal-push"] -- "every segment, at most 60 s apart" --> bucket[("S3 bucket")]
+    push --> bucket
+    bucket --> drill
+    drill --> restore["Throwaway container: backup-fetch LATEST, replay WAL, promote"]
+    restore --> pass["Passes when out of recovery, same Alembic revisions, row counts within slack"]
+```
+
+## Data stores
+
+PostgreSQL is the only store and the source of truth. A domain owns its tables. Other domains read them through its service, never with their own SQL. A reference to another domain's row is an id, never an ORM relationship. File bytes live in an S3-compatible bucket; the `files` table is their index (see Object storage).
+
+## A domain package
+
+```
+app/starter/<domain>/
+  models.py          SQLAlchemy models for the tables this domain owns
+  schemas.py         Pydantic request and response bodies, only when the domain has a router
+  types.py           read types other domains may use (frozen models)
+  enums.py           closed value sets shared with other domains
+  errors.py          AppError subclasses, only when callers need to tell them apart
+  service.py         <Domain>Service: use cases, the only thing other code calls
+  repository.py      queries for this domain's own tables, no decisions
+  router.py          HTTP routes, thin
+  jobs.py            job kinds: a JobPayload subclass per kind, only when the domain has any
+  dependencies.py    request-scoped injection, only when a router needs it
+  sweeps.py          clock-driven passes a worker loop runs, only when the domain has any
+  cli.py             CLI commands for this domain, only when it has any
+  configuration.py   pydantic-settings for this domain, only when it has settings
+  log_events.py      typed log records
+```
+
+A file exists only when something runs, opens, injects, configures or raises through it. There is no catch-all `adapters.py`, `utils.py` or `helpers.py`. A file is named after what it implements: `<kind>.py` or `<feature>_<kind>.py` for the kinds above, which `tools/check_file_kinds.py` holds every domain and infrastructure package to.
+
+- The service holds the use cases and is the domain's public API. Code outside the domain calls `service.py`, never the repository, so storage can move without touching callers. A big service splits by use case into `<feature>_service.py` files in the same domain, never into a new layer.
+- The repository is data access for the domain's own tables (`find_account()`, `insert_session()`). It runs queries and decides nothing.
+- Other domains read a domain's data through a read type from `types.py`. The ORM model stays inside its domain.
+- The package that owns the table or the API owns the model. No other package redefines it.
+- The service gets what it needs through its constructor, by keyword (`AccountService(repository=..., relying_party=...)`). It never reads `app.state`, module globals or `Resources`, so it runs the same in a request, a worker loop and a CLI command. A `classmethod` such as `on_session(session)` builds it for the common case.
+- Sub-services and repositories are built once in `__init__`, not per call. A heavy collaborator only some calls need is built when first needed.
+- A service returns typed models. A tuple or dict return is a missing model, and `tools/check_service_returns.py` refuses a fixed-length tuple.
+- The service owns domain decisions. Routers and CLI commands parse input, call one service method, and shape the output or error.
+
+### Calling another domain
+
+Down the graph, a service takes the lower domain's service through its constructor. The wiring is written once, in `app/lifespan/`, and routers and CLI commands take services from there.
+
+Up the graph, the contracts refuse it. Two domains that need each other share a third, higher domain that owns the orchestration.
+
+### Starting a new domain
+1. Pick its place in the import-linter `layers` contract. It may import only what sits below it. Add its `protected` contract.
+2. Create `app/starter/<domain>/models.py`, `repository.py`, `service.py`, and `types.py` if other domains read it.
+3. Import its `models` in `migrations/env.py` and add a revision on the `app` line for its tables (see Migrations).
+4. If it has settings, add `configuration.py` with its own `env_prefix`, and its keys in `.env.example`.
+5. Add `router.py`, `schemas.py` and `dependencies.py` only when HTTP needs them, `sweeps.py` when a worker runs something for it, and `cli.py` when an operator needs it.
+6. Add its wiring in `app/lifespan/`.
+
+## Postgres
+
+`app/infrastructure/postgres/` holds `Database` (async engine and session factory, with statement, lock and idle-in-transaction timeouts per connection), the ORM `Base`, the `SurrogateId` and `Timestamps` mixins (a `bigint` identity id, and `created_at` and `updated_at` as `timestamptz`) and `build_postgres_enum`.
+
+A repository takes an `AsyncSession` by keyword and holds no business rules. Partial reads use `select()` with explicit columns, locked reads `with_for_update()`, and bulk writes `insert().values([...])`. SQL is never string-formatted.
+
+### Database roles
+
+- `starterapp` is the superuser the postgres image makes from `POSTGRES_USER`. It owns every object. Only `migrate`, the backup scripts and the operator connect as it.
+- `starterapp_application` is the role of the API and any worker. It has no superuser, role or DDL rights: only `SELECT, INSERT, UPDATE, DELETE` on tables and `USAGE, SELECT` on sequences ([privileges](https://www.postgresql.org/docs/18/ddl-priv.html)).
+- Revision `template_0002` creates the role, grants on the existing tables and sequences, and sets default privileges for what later revisions create ([ALTER DEFAULT PRIVILEGES](https://www.postgresql.org/docs/18/sql-alterdefaultprivileges.html)). A revision that creates something in another schema, or a function the API calls, grants on it itself.
+- The role lives in a revision, never in a `/docker-entrypoint-initdb.d` script, which runs only on an empty data directory.
+- A revision can't hold a password. `migrations/env.py` sets it after every upgrade from `STARTER_APPLICATION_DATABASE_PASSWORD`, hashed to a SCRAM verifier on the client, so the password never reaches a server log or a command line. Rotating it is a change to the API's env file and a deploy.
+
+### Units of work
+
+A session is one transaction and one unit of work, such as a request, a worker pass or a CLI command. The entry point opens it and commits or rolls back (`DatabaseSession` in `app/lifespan/dependencies.py` for a request). Services and repositories only `flush`, so two repositories called by one service write atomically. A transaction never spans two databases.
+
+A passkey challenge is the one write a request commits on its own: `consume_signed_challenge_in_own_transaction` (`accounts/dependencies.py`) deletes it in a short session before verification, so a refused ceremony can't roll the delete back and a challenge works once.
+
+A write that must be serialised across processes takes `pg_advisory_xact_lock` on a named key at the start of its transaction, so the lock ends with the transaction.
+
+### Pool budget
+
+Each process holds its own pool. The sum over every process stays under `max_connections` (100) minus `superuser_reserved_connections` (3). The API's pool is `API_DATABASE_POOL_SIZE` 10 plus `API_DATABASE_MAXIMUM_OVERFLOW` 5, and the rate limiter holds its own `RATE_LIMIT_DATABASE_POOL_SIZE` 2, so a rate-limit check never waits behind a request handler or takes its connection: at most 17 per API replica (`app/lifespan/composition.py`). The worker and a CLI command each hold `PROCESS_DATABASE_POOL_SIZE` 2 with no overflow. Count every other process at its maximum: each worker's pool, the `migrate` run, a CLI command, and the backup scripts' sessions. Shrink a pool before raising `max_connections`.
+
+### Migrations
+
+Alembic owns the schema, in separate lines that can't collide. The revisions the template came with are in `backend/migrations/template_versions/`: the base line (`template_NNNN`, label `template`) and one line per part that can be removed (`accounts_NNNN`, `worker_NNNN`, `object_storage_NNNN`, each labelled with its name). The app's own are in `backend/migrations/versions/` (`app_NNNN`, label `app`), which starts with the empty `app_0001` root. New revisions go on the `app` line. No `create_all`, no hand `ALTER` on a live database. `alembic upgrade heads` applies every line and is the one deploy command.
+
+After a model change, run `alembic revision --autogenerate --head app@head --rev-id app_NNNN -m "<name>"` against a running stack and read the file. Alembic refuses a revision without `--head`. `alembic check` must then report nothing. It needs a database, so it is no hook.
+
+- A revision that needs a table from another line names that line's revision in `depends_on`.
+- An applied revision never changes. A fix is the next revision. `downgrade()` raises.
+- No backward compatibility (owner, 2026-11-06). A schema change lands in one release: the new shape only, with a revision that moves every stored row in the same release. No dual reads, no old-shape columns or readers kept for a later release.
+- A revision that moves or backfills data is proven before merge on a disposable database migrated to the previous head and filled with realistic rows.
+- `create index concurrently` goes in its own revision with `autocommit_block()`.
+- A new or renamed Postgres enum member is a revision too (`ALTER TYPE ... ADD VALUE` or `RENAME VALUE`), and so is a Postgres extension, as `template_0001` creates `pg_stat_statements`.
+
+### Server settings
+
+The `postgres` service passes every setting as a `-c` flag in `docker-compose.yml`, so every environment runs the same values and `SHOW <setting>` proves what is live ([server configuration](https://www.postgresql.org/docs/18/runtime-config.html)).
+
+- `shared_buffers` is a quarter of the container's memory limit, and `effective_cache_size` is the limit minus `shared_buffers`. `work_mem` is per sort or hash operation, and `maintenance_work_mem` is also each autovacuum worker's budget. The four are `POSTGRES_*` keys in `.env.example`. `max_connections=100` is explicit for the pool budget.
+- The slow-query log starts at 500 ms. `log_parameter_max_length=0` keeps bind parameters, and so users' values, out of it. Lock waits, temp files (a spill means a query outgrew `work_mem`) and autovacuum runs of 1 s or more are logged too. Read them with `docker compose logs postgres`.
+- `log_line_prefix` carries the query id, which matches `pg_stat_statements.queryid`. Revision `template_0001` creates that extension. Rank statements with `SELECT query, calls, total_exec_time FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 5`.
+- `archive_mode` is off locally and on in production, where `deploy/deploy.sh` and the backup scripts export `POSTGRES_ARCHIVE_MODE=on`. `archive_timeout=60` switches segments after a minute with activity, so a lost disk loses about a minute. Only the production image has `wal-g`.
+
+Docker sets no memory limit by default ([resource constraints](https://docs.docker.com/engine/containers/resource_constraints/)), so `deploy/docker-compose.production.yml` sets `mem_limit` on every service: 512 MB for `api`, `worker` and `migrate`, and `POSTGRES_MEMORY_LIMIT` (default `1g`) for `postgres`. At the defaults `shared_buffers`, `/dev/shm`, three autovacuum workers and the API's 17 connections use about 848 MB of it. To grow, raise `POSTGRES_MEMORY_LIMIT` and `POSTGRES_SHARED_BUFFERS` together, and set `POSTGRES_EFFECTIVE_CACHE_SIZE` to the limit minus `shared_buffers`.
+
+### Backups
+
+Production archives every WAL segment and takes a base backup each day with [WAL-G](https://github.com/wal-g/wal-g) into an S3-compatible bucket, encrypted on the client (see Deploy and backups). A restore replays the newest base backup plus the archived WAL up to the last archived minute. A scheduled `pg_dump` can't replace it ([continuous archiving](https://www.postgresql.org/docs/18/continuous-archiving.html)).
+
+- `deploy/postgres/Dockerfile` is `postgres:18-alpine`, the same base as local runs so the data volume and its collation carry over, plus WAL-G built from a pinned tag and commit.
+- `deploy/postgres/backup.env.example` lists the backup keys. The real file lives outside the checkout with mode 600, and `STARTER_POSTGRES_BACKUP_ENVIRONMENT_FILE` names it. No credential is ever a command argument.
+- `WALG_LIBSODIUM_KEY` is 32 random bytes in hex. Write it straight into the file with `printf 'WALG_LIBSODIUM_KEY=%s\n' "$(openssl rand -hex 32)" >> <file>` and keep a copy off the host and away from the bucket. Without it no backup can be read. Old backups need the old key, so it can't be replaced in place.
+- The bucket credentials get read, write and list. Nothing here deletes, so retention is a lifecycle rule on the bucket, longer than the restore window you promise. `WALG_PREVENT_WAL_OVERWRITE` never overwrites an archived segment ([WAL-G PostgreSQL](https://github.com/wal-g/wal-g/blob/v3.0.9/docs/PostgreSQL.md)), so a bucket with object lock works too.
+- `deploy/deploy.sh` runs `backup_postgres.sh` after every deploy, so every migration has a fresh base backup behind it.
+- `deploy/postgres/verify_postgres_backup_restore.sh` is the restore drill. It refuses when the newest base backup is older than `POSTGRES_RESTORE_DRILL_MAXIMUM_BASE_BACKUP_AGE_HOURS` (default 26). The throwaway container runs with no published port and `archive_mode=off`, so it never pushes into the production prefix. Row counts may differ from production's by `POSTGRES_RESTORE_DRILL_ROW_SLACK` (default 10); `UNLOGGED` tables are not counted, because a restore empties them. It prints the seconds to a usable database and the last replayed commit, then removes the container and its volume. Production gets only reads, one restore point and one WAL switch.
+
+Restore after losing the host: put back the checkout, the deploy `.env`, the database owner env file and the backup env file with the key, then run
+
+```sh
+export STARTER_ENVIRONMENT_FILE=<deploy .env> STARTER_DATABASE_OWNER_ENVIRONMENT_FILE=<database owner env file> \
+  STARTER_POSTGRES_BACKUP_ENVIRONMENT_FILE=<backup env file> POSTGRES_ARCHIVE_MODE=on
+compose=(docker compose --env-file "$STARTER_ENVIRONMENT_FILE" -f docker-compose.yml -f deploy/docker-compose.production.yml)
+"${compose[@]}" build postgres
+"${compose[@]}" run --rm --no-deps --user postgres --entrypoint sh postgres -c \
+  'mkdir -p -m 0700 "$PGDATA" && wal-g backup-fetch "$PGDATA" LATEST && touch "$PGDATA/recovery.signal"'
+deploy/deploy.sh
+```
+
+A long replay can outlast `--wait-timeout`. When `deploy.sh` gives up, wait for "archive recovery complete" in `docker compose logs postgres` and run it again.
+
+### Backup schedule
+
+Base backups and drills run from `deploy/postgres/run_postgres_backup_schedule.sh`, a plain loop: a base backup every `POSTGRES_BACKUP_INTERVAL_SECONDS` (default a day), the drill every `POSTGRES_RESTORE_DRILL_INTERVAL_SECONDS` (default a week), a retry after `POSTGRES_BACKUP_RETRY_SECONDS` (default an hour) when either fails. systemd runs it: `deploy/postgres/starter-app-postgres-backup-schedule.service` starts it at boot, restarts it on failure and sends its lines to the journal. Install it once per host and read it with:
+
+```sh
+systemctl enable --now <checkout>/deploy/postgres/starter-app-postgres-backup-schedule.service
+journalctl --unit starter-app-postgres-backup-schedule
+```
+
+The unit expects the checkout at `/opt/starter-app` and the env files at `/etc/starter-app/deploy.env`, `database-owner.env` and `postgres-backup.env`. Override other paths with `systemctl edit`.
+
+`deploy/deploy.sh` warns, still deploys, and then exits 1 when the unit is not active, or when before the deploy the newest base backup was older than `POSTGRES_RESTORE_DRILL_MAXIMUM_BASE_BACKUP_AGE_HOURS`, missing or unreadable. Both scripts take a lock, so a run by hand and the loop never overlap. The loop's first pass after a start runs at once. While it is down, each deploy still takes a base backup.
+
+## Object storage
+
+Files live in an S3-compatible bucket and their bytes never pass through the API, so its 64 KB body cap stays. `app/infrastructure/object_storage/` holds the settings and `ObjectStorageClient`, opened once in the lifespan and held on `Resources`. `app/starter/files/` is a sample domain on top of it, with a `files` table on its own Alembic line (`object_storage_0001`). Every file route needs the signed-in account, and a file belongs to the account that stored it.
+
+```mermaid
+sequenceDiagram
+    participant client as Client
+    participant api as API
+    participant bucket as Bucket
+    client->>api: POST /api/v1/file-uploads {content_type, size_bytes}
+    api-->>client: upload_id, upload_url signed for pending/<account>/<id>, that type and that size
+    client->>bucket: PUT upload_url with the bytes
+    bucket-->>client: 200, or 403 when the size, type, key or time differ
+    client->>api: POST /api/v1/files {upload_id}
+    api->>bucket: HEAD pending/<account>/<id>
+    api->>api: check the size and type the bucket reports, insert the files row
+    api->>bucket: copy to files/<id> as an attachment, only if the ETag still matches
+    api-->>client: file_id, download_url (a signed GET)
+    client->>bucket: GET download_url
+```
+
+- The upload URL signs `Content-Length` and `Content-Type`. On the bucket server `docker-compose.yml` runs for local work, a PUT with another size, another type or another key answers 403 (`e2e/object_storage_flow.py` measures it). The API then reads size and type back from the bucket (`HEAD`) and checks them again; it never trusts what the client declared. The allowed types are `FileContentType` and the limit is `MAXIMUM_FILE_SIZE_BYTES` (10 MiB), both in the `files` package. `ObjectStorageClient` signs no single upload over 5 GiB; multipart upload is not built.
+- An upload URL stays usable until it expires, also after the file is stored (the flow uploads to it a second time). So uploads land under `pending/`, and the copy under `files/` is one no client ever held a write URL for: the second upload does not change the stored file.
+- The bucket is private. A download is a presigned GET that lives `STARTER_OBJECT_STORAGE_DOWNLOAD_URL_LIFETIME_SECONDS` (60); whoever holds it can read the file until then. The object is stored with `Content-Disposition: attachment`. The content type is still the uploader's claim: decode the bytes before treating a file as an image.
+- Delete removes the row, then `files/<id>` and the upload under `pending/`, then commits. When the bucket fails the request answers 503, the row comes back and the client repeats the delete. So a failure leaves a row without an object, never an object nobody can find.
+- When the commit fails after the copy, the object exists without a row until the client stores the same `upload_id` again. Nothing sweeps the bucket for such objects.
+- Uploads that are never stored stay under `pending/`. The app removes none of them: give the production bucket a rule that expires that prefix after a day, and check it works on the bucket you use.
+- `STARTER_OBJECT_STORAGE_ENDPOINT_URL` is where the API calls the bucket, and `STARTER_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL` is the host signed into the URLs a client gets. Locally they differ (the compose network and `127.0.0.1`); against a hosted bucket they are the same.
+- The client makes no call at startup and `/ready` does not check the bucket, so a bucket outage fails only the file routes, with 503 `object_storage_unavailable` and an `ObjectStorageCallFailed` log line.
+- `docker-compose.yml` runs [versitygw](https://github.com/versity/versitygw) as `object-storage` for local work only: uid 10002, read-only, no capabilities, the bucket made at start, published on `127.0.0.1:OBJECT_STORAGE_PUBLISH_PORT`. Its data volume is mounted on the image's `/var/tmp`, a directory any uid may write, so the bucket needs no root and no init container. `deploy/docker-compose.production.yml` puts the service behind a profile, so production starts no bucket server. There the settings name a real bucket and a key that may only get, put and delete objects in it. A browser client also needs a CORS rule on the bucket. Nothing here was run against a hosted bucket: run the flow's checks against yours before relying on its refusals.
+- The Postgres backups hold the `files` rows, not the objects: the bucket needs its own. A database restored to an earlier time can name objects deleted since.
+- Every file route takes `AccountAccessDependency`: without a session it answers 401. The `files` row carries `account_id`, and reading, signing a download and deleting all look the file up by id and owner together, so another account gets the same 404 `file_not_found` as for an id that does not exist. An upload is signed for a key under the account's own `pending/<account id>/`, so one account cannot store another's upload either.
+- `files.account_id` is `ON DELETE RESTRICT`: Postgres refuses to delete an account that still owns files. A cascade would drop the rows and leave the objects in the bucket with nothing pointing at them. Code that deletes an account deletes its files through `FileService` first.
+- Signing an upload URL has its own budget, `FILE_UPLOAD_URLS_PER_WINDOW_PER_IP` (10 a minute per address, the passkey writes' number), beside the general 120 in `app/rate_limit_middleware.py`. Each signed URL lets its holder put up to 10 MiB under `pending/` until the lifecycle rule runs, so the general budget alone would let one address park 1.2 GiB a minute; this one caps it at 100 MiB. It is kept in Postgres like the others, so API replicas share it.
+- To drop the sample, delete the package, its router in `app/main.py`, its budget in `app/rate_limit_middleware.py`, its import in `migrations/env.py` and its lines in `pyproject.toml`, and drop the table in an `app` revision.
+
+## Connection packages and external HTTP APIs
+
+A connection package owns one external system's configuration and client:
+
+```
+app/infrastructure/<name>_api/
+  configuration.py   base URL, key or credentials (SecretStr), timeouts
+  authentication.py  an httpx.Auth, only when the credential is not a static header
+  client.py          <Name>ApiClient: one method per endpoint, typed arguments, returns models
+  schemas.py         request and response bodies as Pydantic models
+  errors.py          <Name>ApiError and the few cases callers handle (NotFound, RateLimited)
+```
+
+- httpx is the one HTTP client. Each API gets one `httpx.AsyncClient` per process, opened on the process's `AsyncExitStack`, with `base_url`, default headers and an explicit `httpx.Timeout`.
+- The client method is the contract. It maps statuses to exceptions and returns `Model.model_validate(response.json())`. Callers never see `httpx.Response` or raw dicts.
+- Retries use [stamina](https://stamina.hynek.me/en/stable/), only on connection errors, 429 and 5xx, only for requests safe to repeat, and honour `Retry-After`. `httpx.AsyncHTTPTransport(retries=n)` retries only connect failures ([transports](https://www.python-httpx.org/advanced/transports/)).
+- Credentials live in the client, never in a caller. A static key is a default header. An expiring token is refreshed shortly before expiry by one shared task, so parallel callers never refresh twice ([RFC 9700 §4.14.2](https://www.rfc-editor.org/rfc/rfc9700#section-4.14.2)), and on a 401 it is refreshed once and the request resent once.
+- When an optional integration is down, the request still works and the failure is logged.
+- Any retry is bounded, backs off with jitter, and covers only errors a retry can fix.
+- An API package's bodies go in `schemas.py`, because `schemas.py` means Pydantic wire shapes everywhere and `models.py` means SQLAlchemy tables.
+
+## Configuration
+
+Every setting lives in a pydantic-settings `BaseSettings` in a `configuration.py`, one per package that has settings, each with its own `env_prefix`: `STARTER_` for the app and `STARTER_<PACKAGE>_` for a package, such as `STARTER_ACCOUNTS_`. App-wide settings (service identity, database host, port and passwords, trusted proxy addresses, allowed hosts, log level) go in `app/configuration.py`.
+
+- Non-secret settings carry their default in the class. The environment only overrides it.
+- Secrets have no default and are `SecretStr` with `repr=False`, so a missing one fails at startup.
+- No env file holds a DSN. `ConnectionSettings` and `MigrationConnectionSettings` build it from the password, `STARTER_DATABASE_HOST` and `STARTER_DATABASE_PORT`, and return a `SecretStr`.
+- Each settings getter is `@lru_cache` ([FastAPI settings](https://fastapi.tiangolo.com/advanced/settings/#creating-the-settings-only-once-with-lru-cache)).
+- Services get settings values by keyword from the lifespan or a dependency (`AccountService.on_session(session, relying_party=...)`) and never read settings themselves.
+- Nothing else reads the environment. ruff's banned-api refuses `os.environ` and `os.getenv`, and `migrations/env.py` builds its DSN from `read_migration_connection_settings()`.
+- One settings class declares each key, and the example env files list every key (`tools/check_setting_keys.py`). Compose's `environment:` never repeats one. Each secret reaches only the containers that use it (see Containers):
+  - `.env.example` becomes the API's env file (`STARTER_ENVIRONMENT_FILE`, default `.env`). It holds the application role's password and also feeds compose interpolation.
+  - `.env.database-owner.example` becomes the database owner env file (`STARTER_DATABASE_OWNER_ENVIRONMENT_FILE`, default `.env.database-owner`). It holds `POSTGRES_PASSWORD`. The API never gets the superuser password.
+
+## Resources and startup
+
+`app/lifespan/resources.py` holds `Resources`, a frozen typed model. Each process role opens it once on an `AsyncExitStack` (`app/lifespan/composition.py`), so resources close in reverse order even when startup fails halfway. A missing or wrong resource fails at startup, before the first request, and the database check refuses a schema behind any Alembic head. Dependencies read it through `ResourcesDependency`. Nothing else reads `app.state`.
+
+Startup does no work. `create_app` is a uvicorn factory (`factory=True`, started by `python -m app serve-api`), so importing `app.main` reads no settings. The API lifespan opens connections and returns. Migrations (the compose `migrate` service), seeding, rebuilding derived state and maintenance are deploy steps or worker passes, so a restart is fast and the same everywhere.
+
+## Background work
+
+Work outside a request runs in the `worker` service, never in the web server. It is `python -m app run-worker` (`app/worker.py`) from the same image as the API. It opens `ProcessResources` (`open_process_resources` in `app/lifespan/composition.py`), claims one job at a time from the `jobs` table and runs it.
+
+`app/infrastructure/task_queue/` is the whole queue: one table in Postgres, no Redis and no queue library. The table is its own Alembic line, `worker` (`migrations/template_versions/worker_0001_job_queue.py`), so `alembic upgrade heads` adds it to a database that already ran every other line.
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: enqueue_job, in the caller's transaction
+    queued --> running: claimed with FOR UPDATE SKIP LOCKED, attempt_count + 1, lease set
+    running --> [*]: run_job returned, the row is deleted in the handler's transaction
+    running --> queued: run_job raised with attempts left, run_at = now + backoff
+    running --> failed: run_job raised on the last attempt, last_error kept
+    running --> running: the lease ran out with attempts left, claimed again
+    running --> failed: the lease ran out on the last attempt
+    running --> queued: SIGTERM and the job outlived the grace, attempt_count - 1
+```
+
+- A job kind is a frozen `JobPayload` subclass in its domain's `jobs.py`: a `kind` string (`<package>.<job>`), the payload fields, and `run_job(session=...)`, which calls the domain's service. `app/worker.py` lists every class in `JOB_PAYLOAD_CLASSES`. A kind is stored on `jobs` rows, so renaming one ships with a revision that renames it on the queued rows.
+- A payload carries ids and plain values, never a copy of a row the handler can read by id, so a retried job reads current data.
+- Enqueue with `await enqueue_job(session, payload=...)` on the caller's own session. The job exists if and only if the caller's transaction commits. Never enqueue from a place with no transaction.
+- Delivery is at least once. `run_job` runs in one transaction and the job's row is deleted in that same transaction, so what a handler writes to Postgres commits together with the job being done, or not at all. An effect outside Postgres (an email, a call to another API) can happen twice, so the handler makes it safe to repeat: it records the send first, or passes the provider an idempotency key.
+- Attempts are bounded. `maximum_attempts` on the payload class (default 5) is stored on the row at enqueue. A failed attempt waits 2 s, doubling to at most an hour, plus up to 10% jitter. After the last attempt the row stays `failed` with `last_error`, the exception's type and message cut to 1000 characters. Nothing deletes failed rows or runs them again. To run one again: `UPDATE jobs SET status = 'queued', attempt_count = 0, run_at = now() WHERE id = <id>`.
+- Every error is retried the same way, an unknown kind and a payload that no longer validates included, so a job a newer build enqueued waits for a worker that knows it.
+- A claim holds a lease of `STARTER_TASK_QUEUE_JOB_LEASE_SECONDS` (60). A handler is cancelled after `STARTER_TASK_QUEUE_JOB_TIMEOUT_SECONDS` (30), and the settings refuse a lease that is not longer, so a live worker never has its job claimed from under it. A worker that dies leaves the row `running`, and a worker claims it again when the lease runs out. A crash counts as an attempt, so a job that kills its worker ends `failed` too. A handler that blocks the event loop past the lease can run twice at once. The second claim wins, and the first rolls back when its delete finds the row claimed again.
+- The idle worker polls every `STARTER_TASK_QUEUE_POLL_INTERVAL_SECONDS` (1): one statement that fails expired jobs with no attempts left, one that claims. There is no `LISTEN`/`NOTIFY`: a job waits at most one poll interval.
+- On SIGTERM the worker claims nothing more. The job in hand gets 10 s to finish. After that it is cancelled, rolled back and put back as `queued` without using an attempt. `stop_grace_period` is 25 s.
+- The claim loop touches `/tmp/worker-heartbeat` after every claim that reached Postgres. The healthcheck (`python -m app.worker_healthcheck`) fails when the file is older than the job timeout plus the poll interval plus 30 s.
+- `SKIP LOCKED` makes a second worker safe. Each worker runs one job at a time.
+- `queue_probe` is a sample kind. `python -m app enqueue-queue-probe --hold-seconds 5 --outcome raise` enqueues a job that holds, then succeeds or raises, and `e2e/worker_flow.py` uses it to prove retries, the failed state and the lease on a real stack. Once the app has a job of its own, delete the package, its entry in `JOB_PAYLOAD_CLASSES`, its layer in `pyproject.toml` and the CLI command, and point the flow at the real job.
+- There is no scheduler. Clock-driven work is not built.
+
+## Events and webhooks
+
+A change and the message about it use a transactional outbox. The event is written in the same transaction as the change and a worker sends it, so the message goes out if and only if the change commits ([transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html)). The consumer must be idempotent.
+
+A received webhook has its signature checked against the raw body, and old timestamps are rejected ([Standard Webhooks](https://www.standardwebhooks.com/)). Store the event id and skip repeats, record the work and return `2xx` at once, and never rely on arrival order.
+
+## CLI
+
+One entry point, `python -m app` (and `starter-app` in `[project.scripts]`), built on typer. Each process role is a command: `serve-api`, and `run-worker` for the worker. `enqueue-queue-probe` puts a sample job on the queue. `serve-api --reload` is for local development only. A domain's commands live in its `cli.py` and are added to `app/cli.py`. A command opens only the resources it needs and calls a service.
+
+## HTTP API conventions
+
+- Every error leaves as `{"error": {"code", "message", "details", "parameters", "request_id"}}`. The last three appear only when they carry something. The status is the class and `code` is the cause, a stable flat `snake_case` name a client branches on, never renamed or reused. `message` is English for developers. A client shows its own words, keyed by `code`.
+- A refusal is an `AppError` subclass with a `code`, a `status_code` and a safe message. A value the message mentions also travels typed in `parameters`, a frozen `ErrorParameters` model the class names as `parameters_model` (`passkey_credential_id_too_long` carries `maximum_bytes`), so no client parses it out of English.
+- No stack trace, SQL, exception text or upstream error text ever leaves. `app/shared/exception_handlers.py` and `app/unhandled_error_middleware.py` turn every exception into the envelope.
+- Validation errors answer 400 `validation_error` with every field error in `details` as `{code, pointer}`. `pointer` is an [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901.html) JSON Pointer whose first segment names the location (`/body/credential/id`, `/query/limit`, `/path/account_id`). `code` is an `ErrorDetailCode` mapped from pydantic's error type. The rejected input, pydantic's `ctx` and a validator's own text never leave. A body that is not JSON answers 400 `malformed_body`. Rate limits answer 429 `rate_limited` with `Retry-After`.
+- A request body over 64 KB answers 413 `request_body_too_large` with `parameters.maximum_bytes`, on `Content-Length` before anything is read and on a streamed body once it runs over (`app/request_body_limit_middleware.py`). The proxy's cap is the same number.
+- A request whose `Host` is not `localhost`, a loopback address, one of `STARTER_ALLOWED_HOSTS` or the host of `STARTER_ACCOUNTS_PUBLIC_BASE_URL` answers 400 `host_not_allowed`. Starlette's `TrustedHostMiddleware` does the matching, so `*.example.com` and `*` work.
+- Every response carries a server-minted `X-Request-ID`. A 5xx body repeats it as `request_id` so a user can quote it, and the server log holds the stack trace under the same id.
+- The committed `backend/openapi.json` is the contract, and clients are built from it. Every API change shows in review as a diff of that file. `/docs` and `/openapi.json` are off, so the reference is published from the file.
+- Each error status of an operation lists its codes in `x-error-codes`, and `x-error-parameters` gives the schema of each code that carries values. Both come from the `AppError` classes the route names in `responses=describe_error_responses((...))`, plus the shared `validation_error`, `malformed_body`, `host_not_allowed`, `request_body_too_large`, `rate_limited` and `internal_error`. A route that starts raising a new refusal names its class there. A new code on an existing operation is a contract change, so clients fall back on the status class for a code they don't know.
+- Every route has a typed return annotation, which FastAPI uses as its response model, and no `response_model=` that repeats it (ruff `FAST`).
+- Lists that grow paginate by cursor. Offset is only for small, bounded lists.
+- POST routes a client may retry take idempotency keys.
+- Payloads are minimal. A field has one name across REST, events and stored payloads.
+- Request budgets are a GCRA per client IP, kept in Postgres (`app/infrastructure/rate_limit/`, `app/rate_limit_middleware.py`), so every API replica and every restart draws on one budget. A check is one upsert on the `UNLOGGED` table `rate_limit_scopes` (revision `template_0003`), on an autocommit connection from the limiter's own pool, never in the request's transaction. A Postgres crash empties the table ([CREATE TABLE](https://www.postgresql.org/docs/18/sql-createtable.html#SQL-CREATETABLE-UNLOGGED)) and every client starts with a full budget once.
+  - A row is deleted once its budget has refilled: at most once a minute per API process, started by a check, so the table holds only the scopes of about the last two minutes.
+  - When Postgres does not answer a check within 1 s, the API logs `RateLimitStoreUnreachable` once and each process limits from its own memory, trying Postgres again every 5 s. The limits hold per process meanwhile, so N replicas admit up to N budgets.
+- The client IP comes from `X-Real-IP` only when the peer is inside one of `STARTER_TRUSTED_PROXY_ADDRESSES`, a comma-separated list of addresses and CIDR networks. For a proxy on a docker network use the network's subnet. When `X-Real-IP` arrives from a private peer outside the list, the API logs `ForwardedClientAddressIgnored` once per process with the peer's address: every client behind that proxy shares one request budget until the address is added.
+
+## Python and async
+
+Python 3.15 everywhere: `.python-version`, `requires-python`, ruff's `target-version`, ty and the Dockerfile `FROM` lines, bumped together in one change.
+
+Every I/O path is `async`. A library that only blocks is wrapped once, in its infrastructure package, and runs on its own `BlockingExecutor`. Ruff's `ASYNC` rules catch blocking calls inside `async def`. "Banned" in this document means ruff's banned-api list (`[tool.ruff.lint.flake8-tidy-imports.banned-api]` in `backend/pyproject.toml`) refuses it.
+
+- Parallel calls go through `asyncio.TaskGroup`, which cancels the others when one fails. `asyncio.gather` is banned.
+- Deadlines wrap the whole operation in `async with asyncio.timeout(...)`. `asyncio.wait_for` is banned.
+- Fire-and-forget is only for best-effort work and keeps a reference to each task, because the event loop keeps only weak references ([asyncio tasks](https://docs.python.org/3/library/asyncio-task.html)).
+- CPU-heavy work runs in a process pool or a worker, never on the event loop.
+- No custom JSON response class. With a typed return FastAPI serializes through Pydantic straight to bytes ([custom response](https://fastapi.tiangolo.com/advanced/custom-response/#orjson-or-response-model)). `ORJSONResponse` and `UJSONResponse` are banned.
+- Other JSON goes through Pydantic's `model_validate_json`, `model_dump_json` and `TypeAdapter`. Raw JSON with no model uses [orjson](https://github.com/ijl/orjson) (`tools/dump_openapi.py`). The standard library `json` is banned.
+- The event loop is [uvloop](https://pypi.org/project/uvloop/). uvicorn runs with `loop="uvloop"` (`app/cli.py`), and every other async entry point starts with `uvloop.run(main())` (`migrations/env.py`). `asyncio.run`, `asyncio.set_event_loop_policy` and `uvloop.install` are banned ([asyncio policies](https://docs.python.org/3/library/asyncio-policy.html)).
+- Blocking work runs on a named `BlockingExecutor` per kind of work (`app/shared/blocking_executor.py`), opened on the process's `AsyncExitStack` and held on `Resources`. `file_read_executor` reads the Alembic head at startup. `asyncio.to_thread` is banned and semgrep refuses `run_in_executor(None, ...)`: the default executor also serves the loop's DNS lookups.
+- `lazy import` ([PEP 810](https://peps.python.org/pep-0810/)) is for a heavy module a CLI command or worker only sometimes needs.
+
+## Conventions
+
+- Exceptions propagate. Catch only a known error you can name, and turn it into an `AppError` at the boundary. A raised error never copies exception text.
+- A parameter is optional only when the domain has no value for it.
+- No wrappers without a second caller. A module-level constant lives in the module that reads it, and moves to a shared module only when two other modules read it (`tools/check_constant_homes.py`).
+- Models we build go through keyword constructors, which ty checks. `model_validate` and `model_validate_json` read only data from outside (request bodies, external APIs), never our own rows or objects, so nothing uses `from_attributes`. JSON is never parsed with `isinstance` checks.
+- The response bases are `strict=True`, because our own outputs are built with the declared types and a coerced value is a bug ([strict mode](https://pydantic.dev/docs/validation/latest/concepts/strict_mode/)).
+- No `model_copy(update=...)`, because neither ty nor Pydantic checks the update dict. No call-site `include=` or `exclude=` on wire output. A different shape is a different model ([FastAPI response model](https://fastapi.tiangolo.com/tutorial/response-model/#response-model-include-and-response-model-exclude)).
+- No type dispatch on our own classes. The behaviour lives on the class as a method or property, or Pydantic's discriminator picks the class ([Replace Conditional with Polymorphism](https://refactoring.com/catalog/replaceConditionalWithPolymorphism.html)). An enum's mapping is one property on the enum whose body is a `match` ending in `assert_never`, which ty proves exhaustive. `assert` is banned (ruff `S101`).
+- Grouped values and collaborator carriers are frozen Pydantic models (`ConfigDict(frozen=True)`, plus `arbitrary_types_allowed=True` when fields are clients or services), like `Resources`. Dataclasses and NamedTuple bundles are banned. Inherit only for is-a types. Values that merely travel together are composed.
+- No underscore-private methods and no `@staticmethod`.
+- Everything is UTC: timezone-aware `datetime`, `timestamptz` columns, `TZ=UTC` in every process.
+- No comments or docstrings, in Python, YAML, shell, the Dockerfiles, the Caddyfile and the systemd unit (`tools/check_comments.py`). A name, a type or a smaller function says it. The three one-line exceptions are the reason on a linter suppression, the link to the upstream bug a workaround exists for, and the `@license` provenance line a third-party licence requires on an adapted file.
+- Middlewares are plain ASGI classes. semgrep refuses `BaseHTTPMiddleware` and `@app.middleware(...)`, which stop `ContextVar` changes from propagating upwards ([Starlette middleware](https://starlette.dev/middleware/)).
+- No hand-made decorators (`functools.wraps` is banned). The only decorators are the libraries' documented API: `router.get`, typer's `command`, `property`, Pydantic validators, `lru_cache` on settings getters.
+- A change that introduces a pattern moves every caller in the same change.
+
+## Control flow
+
+No linter checks these four, so review does.
+
+- Fail fast. Code that needs a value raises a named error on the first line that can tell the value is missing or wrong, and the message says what was expected. Nothing turns a broken input into an empty result: no `return []`, `return None`, default value or swallowed exception. `app/openapi_contract.py` raises `OpenApiDocumentShapeError` rather than write into a member of the wrong type. A fallback stays only where the app is meant to have one, and then the code names it: `find_` returns `None` and `get_` raises, and the rate limiter counts in memory while Postgres is down and logs `RateLimitStoreUnreachable`.
+- No redundant checks. Don't test what the type, the parser or the next line already guarantees: no `len()` before an unpack or an index when a pattern or a model can ask for the exact shape, no `is None` on a value that is not optional, no `isinstance` on a parsed model, no second validation of what a schema validated at the boundary, and no `if items:` in front of a loop over `items`. A check runs once, at the boundary.
+- No guessing. Code never scores candidates to work out which is which. It matches the exact shape and raises when the shape is not there.
+- A value assigned only to be tested is assigned in the test: `if (account := await self.repository.find_account(account_id)) is None: raise ...`, `while chunk := stream.read(size_bytes):`. Keep two lines when the walrus would not fit the line, or when the name is first read far below the test.
+
+## Naming
+
+Code reads like a sentence at the call site: `await account_service.get_account_summary(account_id)`, not `await svc.get(a)`.
+
+- A function takes at most one positional subject besides `self`. Everything after it is keyword-only (ruff `PLR0917` with `max-positional-args = 1`). Signatures a library fixes are the exception, each with a reason on the suppression.
+- Names are long form, whole words: `configuration`, not `cfg`, `error`, not `e`, and `authentication`, not `auth` (`semgrep/naming-rules.yaml`). File names follow it too: `authentication.py`, not `auth.py`.
+- A name doesn't repeat the type: `accounts`, not `account_list`.
+- Functions are verb plus object and say what they return. `get_` returns one thing or raises, `find_` returns one thing or `None`, `list_` returns a list and `count_` an int. `insert_`, `delete_` and `send_` change something. `tools/check_function_names.py` holds those four to their return types outside routers, and refuses a first word that is not in its `ALLOWED_VERBS`. A new verb joins that list in the same change.
+- Wire models put the thing first and the role last. A request body ends in `Request`. A response ends in `Response` or names its part, never `View`.
+- Units go in the name when the type doesn't carry them: `TIMEOUT_SECONDS`, `max_size_bytes`, `created_at`.
+- Constants are `UPPER_SNAKE_CASE`. A constant shared by two domains belongs to the one that owns its meaning.
+- Closed sets are enums, never a `Literal` with two or more string values.
+- String identifiers are namespaced: log operations, env variables (`STARTER_<SETTING>`), cookie names.
+
+## Logging
+
+`configure_logging` in `app/shared/logging.py` sets up logging once, at the start of every process. Every logger comes from `app.shared.logging`.
+
+- Output goes to unbuffered stderr, as JSON in containers and through a readable renderer on a terminal. Tracebacks render with quoted values redacted.
+- Events are typed: `log.emit(logger, event=ApplicationStarted())`. `log.emit_with_current_traceback` adds the traceback of the exception being handled, and `log.emit_with_traceback(logger, event=..., exception=error)` that of an exception you hold. No flag switches between them. Each event is a `LogEvent` model in the owning package's `log_events.py` with a fixed message and operation. Values go in fields, never in the message, and log context is bound only in `app/shared/logging.py`.
+- The request's correlation id goes on every line of a request.
+- Standard library logs go through the same processors, so a process writes one format.
+- Secrets, tokens, full request or response bodies and personal data are never logged.
+- The request log middleware writes one line per request, with the HTTP status as `status_code`, the name `AppError` uses.
+
+## Using the libraries fully
+
+Before writing a helper, check whether the library already does it.
+
+- FastAPI: dependencies as `Annotated` aliases, `fastapi.status` constants, `lifespan=`, one `APIRouter(prefix=..., tags=[...])` per domain.
+- Pydantic: constraints in the type (`Field(gt=0, max_length=200)`, `SecretStr`), `ConfigDict(frozen=True)` for values that must not change, `TypeAdapter` for plain types, `JsonValue` for arbitrary JSON, `model_validate_json` and `model_dump(mode="json")` at the boundaries, discriminated unions instead of type checks.
+- httpx: `base_url`, default headers, `httpx.Timeout`, `httpx.Auth`.
+- Standard library: `enum.StrEnum`, `datetime.UTC`, `pathlib.Path`, `asyncio.TaskGroup` and `asyncio.timeout`, `itertools.batched`.
+
+## Gates
+
+The gates are the checks a change passes before it merges: format, lint, types, structure, dead code, dependencies, the API contract, secrets and known vulnerabilities. `.pre-commit-config.yaml` is the list. Each hook's `name` says what it checks, so this document does not repeat it. [prek](https://github.com/j178/prek) runs them, with the tools locked in `backend/uv.lock` and `e2e/uv.lock` or pinned in the hook or its script.
+
+They run in two stages:
+
+- At commit, on the changed files: `ruff check --fix`, `ruff format`, a secret scan of the staged diff and the merge-conflict check.
+- At push, on everything: every other hook. `uvx prek run --stage pre-push --all-files` runs this stage by hand, and `.github/workflows/ci.yml` runs the same command, builds the image and reports one check, `Check`. It runs on a pull request that is ready for review, on `main` and every Monday. The Monday run, and a run someone starts by hand (`gh workflow run ci.yml --ref <branch>`), also starts the stack the README starts and plays the e2e flows. A draft runs no lane and `Check` passes on it with nothing checked; marking the pull request ready starts them. Plain `uvx prek run --all-files` runs the commit stage only.
+
+A hook limited to `stages: [pre-commit]` never runs in CI, so a new hook keeps the default stages. The commit-msg hook holds a commit subject to the one pattern in `.github/workflows/pr-title.yml`, which the `Conventional title` check also reads.
+
+What the config does not say:
+
+- `uv.lock` is committed, and the hooks and the image install with `--locked`. `prerelease = "explicit"`. `exclude-newer = "7 days"` keeps releases younger than a week out of the lock, so a bad upload has time to be caught ([uv resolution](https://docs.astral.sh/uv/concepts/resolution/)).
+- ruff runs with `select = ["ALL"]`, so dead code fails through `F401`, `F841` and `ARG`. The `ignore` list in `backend/pyproject.toml` is every rule that is off. `TC001`, `TC002` and `TC003` are off because FastAPI and Pydantic read annotations at runtime, so type-only imports break routes. Besides the bans named elsewhere here, banned-api refuses `typing.cast`, `typing.Any`, `requests`, `aiohttp` and `fastapi.HTTPException` (raise an `AppError` subclass).
+- No complexity gate (owner, 2026-11-06). At most one positional argument (`PLR0917`) stays on.
+- ty is pinned exactly because it is pre-1.0, with `respect-type-ignore-comments = false`.
+- Every semgrep rule has a violation in `semgrep/tests/known_bad.py`, and every ty rule set to `error` has one in `ty_fixture/known_bad.py`. The hooks fail when a rule finds nothing there, so a new rule adds its violation in the same change.
+- The semgrep hook also fails on a parse error, because semgrep otherwise skips a file it can't parse, such as one with `lazy import`, without a word.
+- The dead-code check counts a field of an `ApiResponse` or `LogEvent` subclass and a `Mapped[...]` column as used, because serialization and the ORM read it, and skips routes, typer commands and exception handlers by decorator. Anything else that is only reached by name at runtime goes in `backend/vulture_whitelist.py`. Delete a whitelist line once the name is used.
+- `tools/check_service_returns.py` and `tools/check_constant_homes.py` each hold an allowlist, empty today. An entry that no longer breaks its rule fails the hook, so a list only shrinks.
+- The OpenAPI hook rewrites `backend/openapi.json` from the code, so a route change missing from the committed file fails it by leaving the file modified.
+- `uv audit` checks every locked backend dependency against [OSV](https://osv.dev/) and needs the network. When a fix is younger than the 7-day `exclude-newer` cooldown, add an `exclude-newer-package` entry for that package in `backend/pyproject.toml`, run `uv lock --upgrade-package <name>`, and delete the entry once the cooldown has passed.
+
+## Local development
+
+Two ways to run without rebuilding the image for each change. Neither reaches production: Compose reads `compose.watch.yml` and `compose.postgres-loopback.yml` only when a command names them, and `deploy/deploy.sh` names its own files. Every published port is bound to `127.0.0.1`.
+
+In Docker: `docker compose --file docker-compose.yml --file compose.watch.yml up --build --watch`. Compose copies a change under `backend/app` into the `api` container and restarts it, and rebuilds the image when `backend/uv.lock`, `backend/pyproject.toml` or `backend/Dockerfile` changes ([file watch](https://docs.docker.com/compose/how-tos/file-watch/), Compose 2.22.0 or newer). For that, `compose.watch.yml` runs `api` as root on a writable root filesystem: the read-only root refuses the copy, and the image's own user can't remove a deleted file. Capabilities stay dropped. Plain `docker compose up` and the e2e flows read `docker-compose.yml` alone, so they run the read-only image. A new migration needs `docker compose up -d --build`: watch rebuilds the image but doesn't run `migrate`.
+
+On the host, from `backend/`, against Postgres in Docker:
+
+```sh
+docker compose -f ../docker-compose.yml -f ../compose.postgres-loopback.yml up -d --wait postgres
+export STARTER_DATABASE_HOST=127.0.0.1 STARTER_DATABASE_PORT=5432
+uv run --env-file ../.env --env-file ../.env.database-owner alembic upgrade heads
+uv run --env-file ../.env python -m app serve-api --reload --host 127.0.0.1
+```
+
+The exported host and port win over the ones in `.env`, and the port is the value of `POSTGRES_PUBLISH_PORT`. `--reload` restarts the server when a file under `app/` changes and can't be combined with workers ([uvicorn settings](https://www.uvicorn.org/settings/)). Always pass `--host 127.0.0.1` on the host: the default `0.0.0.0` is the container's address.
+
+## Verification
+
+No unit tests. Verification is running the real system: the gates above day to day, and the flows in `e2e/`, which start the compose stack and check it from outside. A flow is one user journey through the public HTTP surface. A flow is never a hook or a pull request gate: it runs when a change needs it and someone starts it, and CI plays them all once a week. A flow is due after a change to its journey's behaviour, a migration, the compose files or the deploy files. Each run leaves an evidence folder outside the repository that names the commit it played. `e2e/README.md` holds the rules for writing a flow.
+
+When work is split into steps, every step passes the gates. A step that changes behaviour runs the flows it touches, once. After the last step the same flows run once more, from the base of the work, so steps that pass alone are also checked together. With a suite this small, "the flows it touches" is often all of them. Beyond that, the whole suite runs only when asked. When a flow fails, run it on the base before blaming the step: red there too means it was already broken.
+
+## Container image and environments
+
+`backend/Dockerfile` is multi-stage and follows [uv's Docker guide](https://docs.astral.sh/uv/guides/integration/docker/): dependencies install before the source is copied, and the virtualenv is built in a builder stage and copied whole, so a Python bump changes only the `FROM` lines. Base images are pinned by digest, and Dependabot's monthly `base-images` pull request moves them. The runtime stage upgrades its OS packages behind `APT_EPOCH` and uninstalls pip. `.github/workflows/image-scan.yml` builds the image every Monday and fails on a fixable HIGH or CRITICAL vulnerability; move `APT_EPOCH` to today's date to pick up an OS fix. The image runs as a non-root user, and compose runs it read-only with a small `/tmp` tmpfs and every capability dropped. One image serves every process (`serve-api`, `alembic upgrade heads`, a worker). `Dockerfile.dockerignore` keeps everything the service does not run out of the build context.
+
+The app runs with Docker Compose on one host, behind a reverse proxy (`deploy/Caddyfile`). One image moves between environments, only environment variables differ, and every environment has its own database and credentials. There is no rollback. A bad release is fixed forward. Compose runs one `api` container. A second replica keeps every request budget, because the budgets are in Postgres, but the rest is yours to set up: `docker-compose.yml` publishes one local port, and Caddy has to be told to spread requests over the replicas.
+
+`deploy/Caddyfile` sets `lb_try_duration 30s` and `lb_try_interval 250ms`, so during a deploy Caddy holds each request and redials until the new `api` container listens, instead of answering 502 ([reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#lb_try_duration)). Keep uvicorn's `timeout_graceful_shutdown` (20 s) below `stop_grace_period` (25 s) below `lb_try_duration` (30 s). When the API is down, a request waits 30 s for its 502.
+
+In production the `postgres` service gets 60 s to stop so the archiver can push what is left. `deploy/deploy.sh` needs `STARTER_ENVIRONMENT_FILE`, `STARTER_DATABASE_OWNER_ENVIRONMENT_FILE` and `STARTER_POSTGRES_BACKUP_ENVIRONMENT_FILE` in its environment.
+
+Every long-running service has:
+
+- two probe endpoints, both outside the rate limiter and the OpenAPI document. `/health` returns 200 while the process runs and checks nothing else. `/ready` proves the app can serve: one `SELECT 1` through the pool with a 2 s wait, and 503 `not_ready` in the error envelope when it fails. The compose healthcheck calls `/ready`, so `docker compose up --wait` and `deploy/deploy.sh` succeed only when the API can serve. Docker restarts nothing on an unhealthy check, so a database outage can't cause a restart loop. The worker has no port: its healthcheck reads the age of a file the claim loop touches.
+- graceful shutdown, so on SIGTERM it stops taking work, finishes what is running, then closes resources, with a `stop_grace_period` longer than the slowest request or pass
+- explicit maxima on pools, request body sizes (64 KB at the proxy and in the app) and request budgets

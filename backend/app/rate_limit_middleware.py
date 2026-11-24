@@ -1,0 +1,85 @@
+from pydantic import BaseModel, ConfigDict
+from starlette.requests import Request
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+from app.lifespan.dependencies import read_resources_of_scope
+from app.lifespan.resources import Resources
+from app.log_events import ForwardedClientAddressIgnored
+from app.shared import logging as log
+from app.shared.errors import RateLimitedError
+from app.shared.exception_handlers import build_app_error_response
+from app.shared.path_params import API_PREFIX
+from app.shared.request import find_untrusted_proxy_address, read_client_ip_address
+
+logger = log.get_logger(__name__)
+
+REQUESTS_PER_WINDOW_PER_IP = 120
+PASSKEY_WRITES_PER_WINDOW_PER_IP = 10
+FILE_UPLOAD_URLS_PER_WINDOW_PER_IP = 10
+WINDOW_SECONDS = 60
+UNLIMITED_PATHS = frozenset({"/health", "/ready"})
+PASSKEY_WRITE_PREFIX = f"{API_PREFIX}/accounts/passkey/"
+FILE_UPLOAD_URL_PATH = f"{API_PREFIX}/file-uploads"
+
+
+class RequestBudget(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    budget_name: str
+    requests_per_window: int
+
+
+PASSKEY_WRITE_BUDGET = RequestBudget(budget_name="passkey_write", requests_per_window=PASSKEY_WRITES_PER_WINDOW_PER_IP)
+FILE_UPLOAD_URL_BUDGET = RequestBudget(
+    budget_name="file_upload_url", requests_per_window=FILE_UPLOAD_URLS_PER_WINDOW_PER_IP
+)
+
+
+def find_extra_budget(method: str, *, path: str) -> RequestBudget | None:
+    if method == "POST" and path.startswith(PASSKEY_WRITE_PREFIX):
+        return PASSKEY_WRITE_BUDGET
+    if method == "POST" and path == FILE_UPLOAD_URL_PATH:
+        return FILE_UPLOAD_URL_BUDGET
+    return None
+
+
+class RateLimitRequestsMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+        self.has_reported_untrusted_proxy = False
+
+    def report_untrusted_proxy_once(self, request: Request, *, resources: Resources) -> None:
+        if self.has_reported_untrusted_proxy:
+            return
+        untrusted_proxy_address = find_untrusted_proxy_address(
+            request, trusted_proxy_networks=resources.trusted_proxy_networks
+        )
+        if untrusted_proxy_address is not None:
+            self.has_reported_untrusted_proxy = True
+            log.emit(logger, event=ForwardedClientAddressIgnored(peer_ip_address=untrusted_proxy_address))
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:  # noqa: PLR0917  # ASGI interface
+        if scope["type"] != "http" or scope["path"] in UNLIMITED_PATHS:
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope)
+        resources = read_resources_of_scope(scope)
+        self.report_untrusted_proxy_once(request, resources=resources)
+        client_ip_address = read_client_ip_address(request, trusted_proxy_networks=resources.trusted_proxy_networks)
+        retry_after_seconds = await resources.rate_limiter.count_seconds_until_admitted(
+            f"ip:{client_ip_address}", limit=REQUESTS_PER_WINDOW_PER_IP, window_seconds=WINDOW_SECONDS
+        )
+        extra_budget = find_extra_budget(request.method, path=scope["path"])
+        if retry_after_seconds == 0 and extra_budget is not None:
+            retry_after_seconds = await resources.rate_limiter.count_seconds_until_admitted(
+                f"{extra_budget.budget_name}:{client_ip_address}",
+                limit=extra_budget.requests_per_window,
+                window_seconds=WINDOW_SECONDS,
+            )
+        if retry_after_seconds > 0:
+            refusal = build_app_error_response(
+                RateLimitedError("too many requests; slow down", retry_after_seconds=retry_after_seconds)
+            )
+            await refusal(scope, receive, send)
+            return
+        await self.app(scope, receive, send)

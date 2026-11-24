@@ -1,0 +1,53 @@
+from datetime import datetime
+
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, LargeBinary, String
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.infrastructure.postgres.models import Base, SurrogateId, Timestamps, build_postgres_enum
+from app.starter.accounts.enums import ChallengePurpose
+
+ACCOUNT_USERNAME_MAXIMUM_LENGTH = 32
+
+
+class Account(SurrogateId, Timestamps, Base):
+    __tablename__ = "accounts"
+    __table_args__ = (CheckConstraint("username ~ '^[a-z0-9_]{3,32}$'", name="ck_accounts_username_format"),)
+
+    public_id: Mapped[str] = mapped_column(String(26), unique=True)
+    username: Mapped[str] = mapped_column(String(ACCOUNT_USERNAME_MAXIMUM_LENGTH), unique=True)
+    passkey_user_handle: Mapped[bytes] = mapped_column(LargeBinary(32), unique=True)
+
+
+class AccountPasskey(SurrogateId, Timestamps, Base):
+    __tablename__ = "account_passkeys"
+
+    account_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    credential_id: Mapped[bytes] = mapped_column(LargeBinary, unique=True)
+    public_key: Mapped[bytes] = mapped_column(LargeBinary)
+    sign_count: Mapped[int] = mapped_column(BigInteger)
+    transports: Mapped[list[str]] = mapped_column(ARRAY(String(16)))
+    label: Mapped[str] = mapped_column(String(100))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AccountSession(SurrogateId, Timestamps, Base):
+    __tablename__ = "account_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    account_passkey_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("account_passkeys.id", ondelete="CASCADE"), index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class PasskeyChallenge(SurrogateId, Timestamps, Base):
+    __tablename__ = "passkey_challenges"
+
+    challenge_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    purpose: Mapped[ChallengePurpose] = mapped_column(
+        build_postgres_enum(ChallengePurpose, name="passkey_challenge_purpose")
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    sign_up_username: Mapped[str | None] = mapped_column(String(ACCOUNT_USERNAME_MAXIMUM_LENGTH))
+    sign_up_user_handle: Mapped[bytes | None] = mapped_column(LargeBinary(32))
