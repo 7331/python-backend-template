@@ -10,20 +10,21 @@ SUBJECTS_GIT_WRITES = re.compile(r'^(Merge |Revert "|Reapply "|(fixup|squash|ame
 
 
 def read_pull_request_title_pattern() -> re.Pattern[str]:
-    patterns = PATTERN_LINE.findall(PULL_REQUEST_TITLE_WORKFLOW.read_text())
-    if len(patterns) != 1:
-        raise SystemExit(
-            f"{PULL_REQUEST_TITLE_WORKFLOW.relative_to(REPOSITORY_ROOT)} must hold exactly one line pattern='...' "
-            f"(found {len(patterns)}): the commit-msg hook reads the title rule from it"
-        )
-    return re.compile(patterns[0])
+    match PATTERN_LINE.findall(PULL_REQUEST_TITLE_WORKFLOW.read_text()):
+        case [pattern]:
+            return re.compile(pattern)
+        case patterns:
+            raise SystemExit(
+                f"{PULL_REQUEST_TITLE_WORKFLOW.relative_to(REPOSITORY_ROOT)} must hold exactly one line pattern='...' "
+                f"(found {len(patterns)}): the commit-msg hook reads the title rule from it"
+            )
 
 
-def read_commit_subject(commit_message_path: Path) -> str:
+def find_commit_subject(commit_message_path: Path) -> str | None:
     for line in commit_message_path.read_text().splitlines():
         if line.strip() and not line.startswith("#"):
             return line
-    return ""
+    return None
 
 
 def main() -> None:
@@ -33,8 +34,9 @@ def main() -> None:
     title_pattern = read_pull_request_title_pattern()
     if commit_message_path is None:
         return
-    subject = read_commit_subject(commit_message_path)
-    if not subject or title_pattern.match(subject) or SUBJECTS_GIT_WRITES.match(subject):
+    if (subject := find_commit_subject(commit_message_path)) is None:
+        return
+    if title_pattern.match(subject) or SUBJECTS_GIT_WRITES.match(subject):
         return
     sys.stderr.write(
         "The commit subject must match the PR title rule in .github/workflows/pr-title.yml, "

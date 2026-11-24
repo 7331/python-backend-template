@@ -77,8 +77,7 @@ def build_http_exception_response(error: StarletteHTTPException) -> Response:
 
 
 def name_error_detail_code(error_type: str) -> ErrorDetailCode:
-    detail_code = DETAIL_CODES_BY_ERROR_TYPE.get(error_type)
-    if detail_code is not None:
+    if (detail_code := DETAIL_CODES_BY_ERROR_TYPE.get(error_type)) is not None:
         return detail_code
     for error_type_suffix, suffix_detail_code in DETAIL_CODES_BY_ERROR_TYPE_SUFFIX:
         if error_type.endswith(error_type_suffix):

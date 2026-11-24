@@ -50,8 +50,7 @@ def drop_color_message(_logger: WrappedLogger, _method_name: str, event_dict: Ev
 
 
 def uppercase_level(_logger: WrappedLogger, _method_name: str, event_dict: EventDict) -> EventDict:
-    level = event_dict.get("level")
-    if level:
+    if level := event_dict.get("level"):
         event_dict["level"] = level.upper()
     return event_dict
 
@@ -68,8 +67,7 @@ def redact_traceback_line(line: str) -> str:
 
 
 def redact_traceback_values(_logger: WrappedLogger, _method_name: str, event_dict: EventDict) -> EventDict:
-    rendered = event_dict.get("exception")
-    if isinstance(rendered, str):
+    if isinstance(rendered := event_dict.get("exception"), str):
         rendered = DATABASE_DETAIL_PATTERN.sub("DETAIL:  [redacted]", rendered)
         event_dict["exception"] = "\n".join(redact_traceback_line(line) for line in rendered.split("\n"))
     return event_dict

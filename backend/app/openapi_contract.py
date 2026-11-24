@@ -72,12 +72,16 @@ def reference_shared_response(response_name: str) -> dict[str, JsonValue]:
     return {"$ref": f"#/components/responses/{response_name}"}
 
 
+class OpenApiDocumentShapeError(TypeError):
+    pass
+
+
 def read_object_member(container: dict[str, JsonValue], *, member_name: str) -> dict[str, JsonValue]:
     match container.setdefault(member_name, {}):
         case dict() as member:
             return member
         case _:
-            return {}
+            raise OpenApiDocumentShapeError(f"`{member_name}` must be an object in the OpenAPI document")
 
 
 def read_list_member(container: dict[str, JsonValue], *, member_name: str) -> list[JsonValue]:
@@ -85,16 +89,16 @@ def read_list_member(container: dict[str, JsonValue], *, member_name: str) -> li
         case list() as member:
             return member
         case _:
-            return []
+            raise OpenApiDocumentShapeError(f"`{member_name}` must be a list in the OpenAPI document")
 
 
-def iterate_strings(values: list[JsonValue]) -> Iterator[str]:
-    for value in values:
-        match value:
+def iterate_error_codes(listed_codes: list[JsonValue]) -> Iterator[str]:
+    for listed_code in listed_codes:
+        match listed_code:
             case str():
-                yield value
+                yield listed_code
             case _:
-                pass
+                raise OpenApiDocumentShapeError(f"`{ERROR_CODES_EXTENSION}` must list error codes as strings")
 
 
 def add_error_codes(
@@ -112,7 +116,7 @@ def is_error_status(status_code: str) -> bool:
 
 def complete_error_response(response: dict[str, JsonValue]) -> None:
     listed_codes = read_list_member(response, member_name=ERROR_CODES_EXTENSION)
-    sorted_codes = sorted(iterate_strings(listed_codes))
+    sorted_codes = sorted(iterate_error_codes(listed_codes))
     listed_codes[:] = sorted_codes
     response["description"] = "Error codes: " + ", ".join(f"`{error_code}`" for error_code in sorted_codes) + "."
     response["content"] = ERROR_RESPONSE_CONTENT
@@ -146,14 +150,11 @@ def document_operation_errors(operation: JsonValue, *, path: str) -> None:
                 )
                 read_object_member(rate_limited_response, member_name="headers").update(RETRY_AFTER_HEADERS)
             add_error_codes(responses, status_code=HTTPStatus.INTERNAL_SERVER_ERROR, error_codes=(AppError.code,))
-            for status_code, response in responses.items():
-                match response:
-                    case dict():
-                        if is_error_status(status_code):
-                            complete_error_response(response)
-                        read_object_member(response, member_name="headers").update(REQUEST_ID_HEADERS)
-                    case _:
-                        pass
+            for status_code in responses:
+                response = read_object_member(responses, member_name=status_code)
+                if is_error_status(status_code):
+                    complete_error_response(response)
+                read_object_member(response, member_name="headers").update(REQUEST_ID_HEADERS)
             responses.setdefault("default", reference_shared_response("ApiError"))
         case _:
             pass
@@ -173,19 +174,12 @@ def add_error_components(components: dict[str, JsonValue]) -> None:
     read_object_member(components, member_name="headers").update(SHARED_RESPONSE_HEADERS)
 
 
-def document_path_errors(path_item: JsonValue, *, path: str) -> None:
-    match path_item:
-        case dict():
-            for operation in path_item.values():
-                document_operation_errors(operation, path=path)
-        case _:
-            pass
-
-
 def build_contract_openapi(openapi_schema: dict[str, JsonValue]) -> dict[str, JsonValue]:
     add_error_components(read_object_member(openapi_schema, member_name="components"))
-    for path, path_item in read_object_member(openapi_schema, member_name="paths").items():
-        document_path_errors(path_item, path=path)
+    paths = read_object_member(openapi_schema, member_name="paths")
+    for path in paths:
+        for operation in read_object_member(paths, member_name=path).values():
+            document_operation_errors(operation, path=path)
     for section_name in ("paths", "components"):
         strip_titles_below(openapi_schema.get(section_name))
     return openapi_schema

@@ -120,8 +120,7 @@ class ObjectStorageClient:
         try:
             return await self.blocking_executor.run_blocking(call)
         except ClientError as client_error:
-            error_code = read_error_code(client_error)
-            if error_code in OBJECT_MISSING_ERROR_CODES:
+            if (error_code := read_error_code(client_error)) in OBJECT_MISSING_ERROR_CODES:
                 raise ObjectMissingError(call_name) from client_error
             if error_code in OBJECT_CHANGED_ERROR_CODES:
                 raise ObjectChangedError(call_name) from client_error

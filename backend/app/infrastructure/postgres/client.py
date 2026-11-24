@@ -88,8 +88,7 @@ class Database:
         if not finished_queries:
             readiness_query.cancel()
             raise build_not_ready_error(TimeoutError())
-        error = readiness_query.exception()
-        if isinstance(error, (SQLAlchemyError, OSError)):
+        if isinstance(error := readiness_query.exception(), (SQLAlchemyError, OSError)):
             raise build_not_ready_error(error) from error
         if error is not None:
             raise error

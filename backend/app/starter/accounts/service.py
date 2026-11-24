@@ -246,8 +246,7 @@ class AccountService:
                 credential = parse_authentication_credential_json(credential_json)
             except WebAuthnException as parse_error:
                 raise PasskeyResponseInvalidError("the passkey response is malformed") from parse_error
-            account_passkey = await self.repository.find_passkey_by_credential_id(credential.raw_id)
-            if account_passkey is None:
+            if (account_passkey := await self.repository.find_passkey_by_credential_id(credential.raw_id)) is None:
                 raise PasskeyUnknownError("this passkey is not registered here")
             try:
                 verified_authentication = verify_authentication_response(
@@ -261,8 +260,7 @@ class AccountService:
                 )
             except WebAuthnException as verification_error:
                 raise PasskeyResponseInvalidError("the passkey did not verify") from verification_error
-            account = await self.repository.find_account(account_passkey.account_id)
-            if account is None:
+            if (account := await self.repository.find_account(account_passkey.account_id)) is None:
                 raise PasskeyUnknownError("this passkey's account is gone")
             if credential.response.user_handle != account.passkey_user_handle:
                 raise PasskeyResponseInvalidError("the passkey's user handle is not its account's")
@@ -333,7 +331,6 @@ class AccountService:
         )
 
     async def get_account_summary(self, account_id: int) -> AccountSummary:
-        account = await self.repository.find_account(account_id)
-        if account is None:
+        if (account := await self.repository.find_account(account_id)) is None:
             raise AccountNotFoundError("the account is gone")
         return present_account_summary(account)

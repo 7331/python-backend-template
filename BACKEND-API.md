@@ -474,6 +474,15 @@ Every I/O path is `async`. A library that only blocks is wrapped once, in its in
 - No hand-made decorators (`functools.wraps` is banned). The only decorators are the libraries' documented API: `router.get`, typer's `command`, `property`, Pydantic validators, `lru_cache` on settings getters.
 - A change that introduces a pattern moves every caller in the same change.
 
+## Control flow
+
+No linter checks these four, so review does.
+
+- Fail fast. Code that needs a value raises a named error on the first line that can tell the value is missing or wrong, and the message says what was expected. Nothing turns a broken input into an empty result: no `return []`, `return None`, default value or swallowed exception. `app/openapi_contract.py` raises `OpenApiDocumentShapeError` rather than write into a member of the wrong type. A fallback stays only where the app is meant to have one, and then the code names it: `find_` returns `None` and `get_` raises, and the rate limiter counts in memory while Postgres is down and logs `RateLimitStoreUnreachable`.
+- No redundant checks. Don't test what the type, the parser or the next line already guarantees: no `len()` before an unpack or an index when a pattern or a model can ask for the exact shape, no `is None` on a value that is not optional, no `isinstance` on a parsed model, no second validation of what a schema validated at the boundary, and no `if items:` in front of a loop over `items`. A check runs once, at the boundary.
+- No guessing. Code never scores candidates to work out which is which. It matches the exact shape and raises when the shape is not there.
+- A value assigned only to be tested is assigned in the test: `if (account := await self.repository.find_account(account_id)) is None: raise ...`, `while chunk := stream.read(size_bytes):`. Keep two lines when the walrus would not fit the line, or when the name is first read far below the test.
+
 ## Naming
 
 Code reads like a sentence at the call site: `await account_service.get_account_summary(account_id)`, not `await svc.get(a)`.

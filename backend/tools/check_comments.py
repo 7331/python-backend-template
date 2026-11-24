@@ -114,10 +114,11 @@ def list_shell_comments(text: str) -> list[Comment]:
             open_quote = character
             cursor += 1
         elif text.startswith("<<", cursor) and not text.startswith("<<<", cursor):
-            heredoc = HEREDOC_OPEN.match(text, cursor)
-            if heredoc:
+            if heredoc := HEREDOC_OPEN.match(text, cursor):
                 pending_heredocs.append(heredoc)
-            cursor = heredoc.end() if heredoc else cursor + 2
+                cursor = heredoc.end()
+            else:
+                cursor += 2
         elif (
             character == "#"
             and (cursor == 0 or text[cursor - 1] in SHELL_COMMENT_BOUNDARIES)
@@ -212,8 +213,13 @@ SYNTAX_BY_FILE_NAME = {
 }
 
 
-def pick_comment_syntax(path: Path) -> CommentSyntax | None:
-    return SYNTAX_BY_SUFFIX.get(path.suffix) or SYNTAX_BY_FILE_NAME.get(path.name)
+def pick_comment_syntax(path: Path) -> CommentSyntax:
+    if (comment_syntax := SYNTAX_BY_SUFFIX.get(path.suffix) or SYNTAX_BY_FILE_NAME.get(path.name)) is None:
+        raise SystemExit(
+            f"{path}: no comment syntax is known for this file. Add its suffix or name to tools/check_comments.py, "
+            "or take it out of the hook's `files` pattern."
+        )
+    return comment_syntax
 
 
 def is_kept(comment: Comment, *, directive: re.Pattern[str]) -> bool:
@@ -224,8 +230,6 @@ def is_kept(comment: Comment, *, directive: re.Pattern[str]) -> bool:
 
 def list_refused_comments(path: Path) -> list[Comment]:
     comment_syntax = pick_comment_syntax(path)
-    if comment_syntax is None:
-        return []
     text = path.read_text(encoding="utf-8")
     refused_comments = [
         comment

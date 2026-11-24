@@ -129,8 +129,7 @@ class JobQueueWorker:
             if handler_task.cancelled():
                 await self.release_claimed_job(claimed_job)
                 return
-            handler_error = handler_task.exception()
-            if handler_error is None:
+            if (handler_error := handler_task.exception()) is None:
                 log.emit(
                     logger,
                     event=JobSucceeded(
@@ -150,8 +149,7 @@ class JobQueueWorker:
             )
 
     async def handle_claimed_job(self, claimed_job: ClaimedJob) -> None:
-        payload_class = self.payload_classes_by_kind.get(claimed_job.job_kind)
-        if payload_class is None:
+        if (payload_class := self.payload_classes_by_kind.get(claimed_job.job_kind)) is None:
             raise UnknownJobKindError("no payload class is registered for the job's kind")
         payload = payload_class.model_validate(claimed_job.payload)
         async with (

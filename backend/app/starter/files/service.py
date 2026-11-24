@@ -80,12 +80,10 @@ class FileService:
         )
 
     async def store_upload(self, upload_id: str, *, account_id: int) -> StoredFile:
-        stored_file = await self.repository.find_file(upload_id, account_id=account_id)
-        if stored_file is not None:
+        if (stored_file := await self.repository.find_file(upload_id, account_id=account_id)) is not None:
             return self.present_file(stored_file)
         pending_object_key = build_pending_object_key(upload_id, account_id=account_id)
-        pending_object = await self.object_storage.find_stored_object(pending_object_key)
-        if pending_object is None:
+        if (pending_object := await self.object_storage.find_stored_object(pending_object_key)) is None:
             raise UploadNotFoundError("no object was uploaded for this upload id, or it has expired")
         refusal_reason = find_upload_refusal_reason(pending_object, maximum_size_bytes=self.maximum_size_bytes)
         if refusal_reason is not None:
@@ -106,8 +104,7 @@ class FileService:
             account_id=account_id,
         )
         if file is None:
-            stored_file = await self.repository.find_file(upload_id, account_id=account_id)
-            if stored_file is None:
+            if (stored_file := await self.repository.find_file(upload_id, account_id=account_id)) is None:
                 raise UploadNotFoundError("no object was uploaded for this upload id, or it has expired")
             return self.present_file(stored_file)
         try:
@@ -125,14 +122,12 @@ class FileService:
         return self.present_file(file)
 
     async def get_file(self, file_id: str, *, account_id: int) -> StoredFile:
-        file = await self.repository.find_file(file_id, account_id=account_id)
-        if file is None:
+        if (file := await self.repository.find_file(file_id, account_id=account_id)) is None:
             raise FileMissingError("no file has this id")
         return self.present_file(file)
 
     async def delete_file(self, file_id: str, *, account_id: int) -> None:
-        file_row_id = await self.repository.delete_file(file_id, account_id=account_id)
-        if file_row_id is None:
+        if (file_row_id := await self.repository.delete_file(file_id, account_id=account_id)) is None:
             raise FileMissingError("no file has this id")
         await self.object_storage.delete_object(build_file_object_key(file_id))
         await self.object_storage.delete_object(build_pending_object_key(file_id, account_id=account_id))

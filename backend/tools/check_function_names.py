@@ -162,8 +162,7 @@ def find_return_contract_problem(function: ast.FunctionDef | ast.AsyncFunctionDe
 
 
 def find_verb_problem(function: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
-    first_word = function.name.split("_", maxsplit=1)[0]
-    if first_word in ALLOWED_VERBS:
+    if (first_word := function.name.split("_", maxsplit=1)[0]) in ALLOWED_VERBS:
         return None
     return (
         f"starts with `{first_word}`, which is not a verb in ALLOWED_VERBS: name it verb plus object, "

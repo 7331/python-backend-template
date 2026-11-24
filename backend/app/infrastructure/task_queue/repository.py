@@ -61,8 +61,7 @@ class JobRepository:
             .values(status=JobStatus.RUNNING, attempt_count=Job.attempt_count + 1, lease_expires_at=func.now() + lease)
             .returning(Job.id, Job.kind, Job.payload, Job.attempt_count, Job.maximum_attempts)
         )
-        row = claimed.one_or_none()
-        if row is None:
+        if (row := claimed.one_or_none()) is None:
             return None
         return ClaimedJob(
             job_id=row.id,
