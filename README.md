@@ -74,13 +74,16 @@ these lists, because CI only runs the template whole.
   `log_events.py`, `models.py` and `postgres_limiter_store.py` in `backend/app/infrastructure/rate_limit/`,
   `backend/app/shared/blocking_executor.py`, `backend/tools/check_migrations.py`, `deploy/postgres/`,
   `compose.postgres-loopback.yml` and `.env.database-owner.example`. Cut from `backend/app/configuration.py` (the
-  connection settings), the four modules of `backend/app/lifespan/` (`Resources` keeps an `InMemoryRateLimiter`),
-  `backend/app/main.py` (`/ready` answers like `/health`), `backend/app/rate_limit_middleware.py` (the in-memory
-  check is not awaited), `backend/app/shared/logging.py`, `backend/Dockerfile`, `backend/Dockerfile.dockerignore`,
-  `backend/pyproject.toml`, `backend/tools/run_house_rules.py`, `.pre-commit-config.yaml`, `deploy/deploy.sh`, the
-  three compose files, `e2e/stack_commands.py`, `.env.example`, `.gitignore`, `.github/dependabot.yml`,
-  `.github/pull_request_template.md`, `.github/workflows/ci.yml`, this file and `BACKEND-API.md`. The request budgets
-  then live in process memory, which means one API replica.
+  connection settings), `composition.py`, `dependencies.py` and `resources.py` in `backend/app/lifespan/`
+  (`Resources` keeps an `InMemoryRateLimiter`), `backend/app/main.py` (`/ready` answers like `/health`),
+  `backend/app/rate_limit_middleware.py` (the in-memory check is not awaited), `backend/app/shared/errors.py`
+  (`NotReadyError`), `backend/app/shared/logging.py`, `backend/Dockerfile`, `backend/Dockerfile.dockerignore`,
+  `backend/pyproject.toml`, `backend/vulture_whitelist.py`, `backend/tools/check_file_kinds.py` (the `models` and
+  `repository` kinds), `check_function_names.py`, `check_constant_homes.py` and `run_house_rules.py` beside it (the
+  `migrations` directory), `.pre-commit-config.yaml`, `deploy/deploy.sh`, `docker-compose.yml`,
+  `deploy/docker-compose.production.yml`, `e2e/stack_commands.py`, `e2e/README.md`, `.env.example`, `.gitignore`,
+  `.github/dependabot.yml`, `.github/pull_request_template.md`, `.github/workflows/ci.yml`, this file and
+  `BACKEND-API.md`. The request budgets then live in process memory, which means one API replica.
 
 ## Run it
 
