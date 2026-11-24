@@ -1,7 +1,7 @@
 # e2e
 
-End-to-end flows against a real compose stack. CI plays them all on each pull request that is ready for review, on
-`main` and once a week; by hand, run the ones a change needs. These are the rules for a flow.
+End-to-end flows against a real compose stack, run when a change needs them: by hand, or all of them with
+`gh workflow run ci.yml --ref <branch>`. CI also plays them all once a week. They are never a pull request gate. These are the rules for a flow.
 `BACKEND-API.md` (Verification) says when one is due.
 
 - One flow is one user journey through the public HTTP surface, start to finish, named `<journey>_flow.py`. No file
@@ -21,7 +21,7 @@ End-to-end flows against a real compose stack. CI plays them all on each pull re
 - A run keeps its evidence outside the repository, in `<temp directory>/starter-app-e2e/<start time>-<flow>-<id>/`:
   `summary.txt` with the result, every `PASS` and `FAIL` line and the commit played (`-dirty` when the working tree
   differs from it), and `containers.log` with what every container wrote. The last line a flow prints is the folder.
-  CI uploads the folders as the `e2e-evidence` artifact.
+  CI uploads the folders as the `e2e-evidence-attempt-<n>` artifact.
 - By hand, a flow is due after a change to its journey, a migration, the compose files or the deploy files. It is never
   a hook. A new flow gets its own step in the `flows` job of `.github/workflows/ci.yml`. A flow that only pinned old
   details gets deleted or rewritten.

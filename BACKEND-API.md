@@ -55,7 +55,7 @@ Sources for the layout: [fastapi-best-practices](https://github.com/zhanymkanov/
     docker-compose.production.yml   memory limits, the reverse proxy's network
     Caddyfile                    the reverse proxy: 64 KB body cap, X-Real-IP, retries while api restarts
     postgres/                    WAL-G image, backup, restore drill, schedule loop and its systemd unit
-  e2e/                           end-to-end flows, played by CI and by hand
+  e2e/                           end-to-end flows, played by hand and by CI once a week
 ```
 
 Packages under `infrastructure/` and `starter/` are flat siblings, never nested, with no module beside them. A big domain splits into sibling packages. A domain's `router.py` and `cli.py` sit beside its `service.py`, so one feature lives in one folder.
@@ -524,7 +524,7 @@ The gates are the checks a change passes before it merges: format, lint, types, 
 They run in two stages:
 
 - At commit, on the changed files: `ruff check --fix`, `ruff format`, a secret scan of the staged diff and the merge-conflict check.
-- At push, on everything: every other hook. `uvx prek run --stage pre-push --all-files` runs this stage by hand, and `.github/workflows/ci.yml` runs the same command, builds the image, starts the stack the README starts, plays the e2e flows and reports one check, `Check`. It runs on a pull request that is ready for review, on `main` and every Monday. A draft runs no lane and `Check` passes on it with nothing checked; marking the pull request ready starts them. Plain `uvx prek run --all-files` runs the commit stage only.
+- At push, on everything: every other hook. `uvx prek run --stage pre-push --all-files` runs this stage by hand, and `.github/workflows/ci.yml` runs the same command, builds the image and reports one check, `Check`. It runs on a pull request that is ready for review, on `main` and every Monday. The Monday run, and a run someone starts by hand (`gh workflow run ci.yml --ref <branch>`), also starts the stack the README starts and plays the e2e flows. A draft runs no lane and `Check` passes on it with nothing checked; marking the pull request ready starts them. Plain `uvx prek run --all-files` runs the commit stage only.
 
 A hook limited to `stages: [pre-commit]` never runs in CI, so a new hook keeps the default stages. The commit-msg hook holds a commit subject to the one pattern in `.github/workflows/pr-title.yml`, which the `Conventional title` check also reads.
 
@@ -560,7 +560,7 @@ The exported host and port win over the ones in `.env`, and the port is the valu
 
 ## Verification
 
-No unit tests. Verification is running the real system: the gates above day to day, and the flows in `e2e/`, which start the compose stack and check it from outside. A flow is one user journey through the public HTTP surface. CI plays every flow on each pull request that is ready for review, on `main` and once a week; they are too slow for a hook. By hand, a flow is due after a change to its journey's behaviour, a migration, the compose files or the deploy files. Each run leaves an evidence folder outside the repository that names the commit it played. `e2e/README.md` holds the rules for writing a flow.
+No unit tests. Verification is running the real system: the gates above day to day, and the flows in `e2e/`, which start the compose stack and check it from outside. A flow is one user journey through the public HTTP surface. A flow is never a hook or a pull request gate: it runs when a change needs it and someone starts it, and CI plays them all once a week. A flow is due after a change to its journey's behaviour, a migration, the compose files or the deploy files. Each run leaves an evidence folder outside the repository that names the commit it played. `e2e/README.md` holds the rules for writing a flow.
 
 When work is split into steps, every step passes the gates. A step that changes behaviour runs the flows it touches, once. After the last step the same flows run once more, from the base of the work, so steps that pass alone are also checked together. With a suite this small, "the flows it touches" is often all of them. Beyond that, the whole suite runs only when asked. When a flow fails, run it on the base before blaming the step: red there too means it was already broken.
 

@@ -21,8 +21,9 @@ to run the app and its checks.
   red check.
 - Leave auto-merge off for a change to a migration, authentication, money or the deploy files. The owner reads
   those before they merge.
-- Run `uvx prek run --stage pre-push --all-files` before you push. CI plays the e2e flows; run one by hand when the
-  change touches its journey.
+- Run `uvx prek run --stage pre-push --all-files` before you push. The e2e flows are no pull
+  request gate: play the ones the change touches, by hand or with `gh workflow run ci.yml --ref <branch>`, and say
+  in the pull request what they showed. CI plays them all once a week.
 
 ## Writing
 

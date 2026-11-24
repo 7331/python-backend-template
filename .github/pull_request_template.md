@@ -17,7 +17,7 @@ The command or e2e flow run on this branch's last commit, and what it showed. `N
 
 ## How verified
 
-Which CI lanes cover the change (`Hooks`, `Image build`, `End-to-end flows`), plus what was done by hand: a request against the running stack, a second stack, a restore drill. Say what was not checked, and why.
+Which CI lanes cover the change (`Hooks`, `Image build`), plus what was run by hand: an e2e flow or the `End-to-end flows` lane started on this branch, a request against the running stack, a second stack, a restore drill. Say what was not checked, and why.
 
 ## Flow
 
