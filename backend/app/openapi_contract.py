@@ -193,4 +193,4 @@ def install_openapi_contract(application: FastAPI) -> None:
             application.openapi_schema = build_contract_openapi(generate_default_openapi())
         return application.openapi_schema
 
-    application.openapi = generate_contract_openapi  # ty: ignore[invalid-assignment]  # FastAPI's override point
+    application.openapi = generate_contract_openapi
