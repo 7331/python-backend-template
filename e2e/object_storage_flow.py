@@ -1,27 +1,22 @@
 from collections.abc import Mapping
-from pathlib import Path
 import secrets
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
-from flow_report import FlowCheckFailedError, FlowReport
+from flow_report import FlowReport
+from flow_run import FlowStage, play_flow
 from http_client import HttpReply, send_http_request, send_json_request
 from software_passkey import RegistrationOptions, SoftwarePasskey
 from stack_commands import (
     ComposeStack,
     StackCommandFailedError,
     build_public_base_url,
-    destroy_stack,
-    find_free_local_port,
-    prepare_compose_stack,
     read_database_value,
     run_compose,
-    start_stack,
 )
 
 DOWNLOAD_URL_LIFETIME_SECONDS = 5
@@ -188,11 +183,6 @@ def sign_up(flow_report: FlowReport, *, api_publish_port: int, username: str) ->
         detail=f"{registration_reply.status_code}, session cookie {'set' if session_cookie_value else 'missing'}",
     )
     return FilesClient(api_publish_port=api_publish_port, session_cookie_value=session_cookie_value)
-
-
-def add_object_storage_flow_settings(compose_stack: ComposeStack) -> None:
-    with compose_stack.environment_file.open("a") as environment_file:
-        environment_file.write("\n".join(OBJECT_STORAGE_FLOW_ENVIRONMENT_LINES) + "\n")
 
 
 def send_bucket_request(url: str, *, method: str, headers: Mapping[str, str], body: bytes | None) -> BucketReply:
@@ -533,48 +523,45 @@ def check_upload_urls_have_their_own_budget(
     )
 
 
-def run_object_storage_flow() -> bool:
-    flow_report = FlowReport()
-    api_publish_port = find_free_local_port()
+def walk_file_journey(flow_stage: FlowStage) -> None:
+    flow_report = flow_stage.flow_report
+    compose_stack = flow_stage.compose_stack
+    api_publish_port = flow_stage.api_publish_port
     file_bytes = secrets.token_bytes(FILE_SIZE_BYTES)
-    with tempfile.TemporaryDirectory() as environment_directory:
-        compose_stack = prepare_compose_stack(Path(environment_directory), api_publish_port=api_publish_port)
-        add_object_storage_flow_settings(compose_stack)
-        try:
-            start_stack(compose_stack)
-            files_client = sign_up(flow_report, api_publish_port=api_publish_port, username=OWNER_USERNAME)
-            other_client = sign_up(flow_report, api_publish_port=api_publish_port, username=OTHER_USERNAME)
-            check_api_refuses_what_it_would_not_sign(flow_report, files_client=files_client)
-            file_upload = create_file_upload(flow_report, files_client=files_client, check_name="upload signed")
-            check_bucket_refuses_what_was_not_signed(flow_report, file_upload=file_upload, file_bytes=file_bytes)
-            stored_file = check_upload_and_download(
-                flow_report,
-                compose_stack=compose_stack,
-                files_client=files_client,
-                file_upload=file_upload,
-                file_bytes=file_bytes,
-            )
-            check_signed_out_requests_are_refused(
-                flow_report, api_publish_port=api_publish_port, stored_file=stored_file, file_upload=file_upload
-            )
-            check_other_account_finds_no_file(
-                flow_report, other_client=other_client, stored_file=stored_file, file_upload=file_upload
-            )
-            check_account_with_files_can_not_be_deleted(flow_report, compose_stack=compose_stack)
-            check_download_urls_are_refused(flow_report, files_client=files_client, stored_file=stored_file)
-            check_delete_removes_object_and_row(
-                flow_report, compose_stack=compose_stack, files_client=files_client, stored_file=stored_file
-            )
-            check_account_without_files_can_be_deleted(flow_report, compose_stack=compose_stack)
-            check_upload_urls_have_their_own_budget(flow_report, compose_stack=compose_stack, files_client=files_client)
-        except StackCommandFailedError as stack_error:
-            flow_report.record_check("stack", passed=False, detail=str(stack_error))
-        except FlowCheckFailedError:
-            pass
-        finally:
-            destroy_stack(compose_stack)
-    return flow_report.has_passed()
+    files_client = sign_up(flow_report, api_publish_port=api_publish_port, username=OWNER_USERNAME)
+    other_client = sign_up(flow_report, api_publish_port=api_publish_port, username=OTHER_USERNAME)
+    check_api_refuses_what_it_would_not_sign(flow_report, files_client=files_client)
+    file_upload = create_file_upload(flow_report, files_client=files_client, check_name="upload signed")
+    check_bucket_refuses_what_was_not_signed(flow_report, file_upload=file_upload, file_bytes=file_bytes)
+    stored_file = check_upload_and_download(
+        flow_report,
+        compose_stack=compose_stack,
+        files_client=files_client,
+        file_upload=file_upload,
+        file_bytes=file_bytes,
+    )
+    check_signed_out_requests_are_refused(
+        flow_report, api_publish_port=api_publish_port, stored_file=stored_file, file_upload=file_upload
+    )
+    check_other_account_finds_no_file(
+        flow_report, other_client=other_client, stored_file=stored_file, file_upload=file_upload
+    )
+    check_account_with_files_can_not_be_deleted(flow_report, compose_stack=compose_stack)
+    check_download_urls_are_refused(flow_report, files_client=files_client, stored_file=stored_file)
+    check_delete_removes_object_and_row(
+        flow_report, compose_stack=compose_stack, files_client=files_client, stored_file=stored_file
+    )
+    check_account_without_files_can_be_deleted(flow_report, compose_stack=compose_stack)
+    check_upload_urls_have_their_own_budget(flow_report, compose_stack=compose_stack, files_client=files_client)
 
 
 if __name__ == "__main__":
-    sys.exit(0 if run_object_storage_flow() else 1)
+    sys.exit(
+        0
+        if play_flow(
+            "object_storage",
+            flow_environment_lines=OBJECT_STORAGE_FLOW_ENVIRONMENT_LINES,
+            walk_journey=walk_file_journey,
+        )
+        else 1
+    )

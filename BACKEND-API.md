@@ -559,7 +559,7 @@ The exported host and port win over the ones in `.env`, and the port is the valu
 
 ## Verification
 
-No unit tests. Verification is running the real system: the gates above day to day, and the flows in `e2e/`, which start the compose stack and check it from outside. A flow is one user journey through the public HTTP surface. CI plays every flow on each pull request that is ready for review, on `main` and once a week; they are too slow for a hook. By hand, a flow is due after a change to its journey's behaviour, a migration, the compose files or the deploy files. `e2e/README.md` holds the rules for writing one.
+No unit tests. Verification is running the real system: the gates above day to day, and the flows in `e2e/`, which start the compose stack and check it from outside. A flow is one user journey through the public HTTP surface. CI plays every flow on each pull request that is ready for review, on `main` and once a week; they are too slow for a hook. By hand, a flow is due after a change to its journey's behaviour, a migration, the compose files or the deploy files. Each run leaves an evidence folder outside the repository that names the commit it played. `e2e/README.md` holds the rules for writing a flow.
 
 When work is split into steps, every step passes the gates. A step that changes behaviour runs the flows it touches, once. After the last step the same flows run once more, from the base of the work, so steps that pass alone are also checked together. With a suite this small, "the flows it touches" is often all of them. Beyond that, the whole suite runs only when asked. When a flow fails, run it on the base before blaming the step: red there too means it was already broken.
 

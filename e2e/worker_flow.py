@@ -1,22 +1,12 @@
 from collections.abc import Callable
-from pathlib import Path
 import sys
-import tempfile
 import time
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from flow_report import FlowCheckFailedError, FlowReport
-from stack_commands import (
-    ComposeStack,
-    StackCommandFailedError,
-    destroy_stack,
-    find_free_local_port,
-    prepare_compose_stack,
-    read_database_value,
-    run_compose,
-    start_stack,
-)
+from flow_report import FlowReport
+from flow_run import FlowStage, play_flow
+from stack_commands import ComposeStack, read_database_value, run_compose
 
 JOB_TIMEOUT_SECONDS = 8
 JOB_LEASE_SECONDS = 10
@@ -56,11 +46,6 @@ class JobStateWait(BaseModel):
     was_reached: bool
     job_state: JobState | None
     waited_seconds: float
-
-
-def add_worker_flow_settings(compose_stack: ComposeStack) -> None:
-    with compose_stack.environment_file.open("a") as environment_file:
-        environment_file.write("\n".join(WORKER_FLOW_ENVIRONMENT_LINES) + "\n")
 
 
 def enqueue_queue_probe(compose_stack: ComposeStack, *, hold_seconds: int, outcome: str) -> int:
@@ -241,24 +226,17 @@ def check_killed_workers_job_is_reclaimed(flow_report: FlowReport, *, compose_st
     )
 
 
-def run_worker_flow() -> bool:
-    flow_report = FlowReport()
-    with tempfile.TemporaryDirectory() as environment_directory:
-        compose_stack = prepare_compose_stack(Path(environment_directory), api_publish_port=find_free_local_port())
-        add_worker_flow_settings(compose_stack)
-        try:
-            start_stack(compose_stack)
-            check_job_runs_once(flow_report, compose_stack=compose_stack)
-            check_failing_job_ends_failed(flow_report, compose_stack=compose_stack)
-            check_killed_workers_job_is_reclaimed(flow_report, compose_stack=compose_stack)
-        except StackCommandFailedError as stack_error:
-            flow_report.record_check("stack", passed=False, detail=str(stack_error))
-        except FlowCheckFailedError:
-            pass
-        finally:
-            destroy_stack(compose_stack)
-    return flow_report.has_passed()
+def walk_queue_probe_journey(flow_stage: FlowStage) -> None:
+    check_job_runs_once(flow_stage.flow_report, compose_stack=flow_stage.compose_stack)
+    check_failing_job_ends_failed(flow_stage.flow_report, compose_stack=flow_stage.compose_stack)
+    check_killed_workers_job_is_reclaimed(flow_stage.flow_report, compose_stack=flow_stage.compose_stack)
 
 
 if __name__ == "__main__":
-    sys.exit(0 if run_worker_flow() else 1)
+    sys.exit(
+        0
+        if play_flow(
+            "worker", flow_environment_lines=WORKER_FLOW_ENVIRONMENT_LINES, walk_journey=walk_queue_probe_journey
+        )
+        else 1
+    )

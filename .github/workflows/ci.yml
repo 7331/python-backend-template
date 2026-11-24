@@ -95,16 +95,31 @@ jobs:
         run: docker compose down --volumes --remove-orphans
       - name: Run the health flow
         working-directory: e2e
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: uv run --locked python health_flow.py
       - name: Run the accounts flow
         working-directory: e2e
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: uv run --locked python accounts_flow.py
       - name: Run the worker flow
         working-directory: e2e
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: uv run --locked python worker_flow.py
       - name: Run the object storage flow
         working-directory: e2e
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: uv run --locked python object_storage_flow.py
+      - name: Keep each flow's evidence folder
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-evidence-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/starter-app-e2e
+          retention-days: 14
 
   check:
     name: Check

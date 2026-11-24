@@ -6,9 +6,12 @@ class FlowReport:
     def __init__(self) -> None:
         self.passed_check_count = 0
         self.failed_check_count = 0
+        self.check_lines: list[str] = []
 
     def record_check(self, check_name: str, *, passed: bool, detail: str) -> bool:
-        print(f"{'PASS' if passed else 'FAIL'} {check_name}: {detail}", flush=True)
+        check_line = f"{'PASS' if passed else 'FAIL'} {check_name}: {detail}"
+        print(check_line, flush=True)
+        self.check_lines.append(check_line)
         if passed:
             self.passed_check_count += 1
         else:

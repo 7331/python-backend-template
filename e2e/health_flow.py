@@ -1,16 +1,8 @@
-from pathlib import Path
 import sys
-import tempfile
 
 from flow_report import FlowReport
+from flow_run import FlowStage, play_flow
 from http_client import send_http_request
-from stack_commands import (
-    StackCommandFailedError,
-    destroy_stack,
-    find_free_local_port,
-    prepare_compose_stack,
-    start_stack,
-)
 
 EXPECTED_HEALTH_BODY = b'{"status":"ok"}'
 
@@ -32,20 +24,9 @@ def check_health(flow_report: FlowReport, *, api_publish_port: int) -> None:
     )
 
 
-def run_health_flow() -> bool:
-    flow_report = FlowReport()
-    api_publish_port = find_free_local_port()
-    with tempfile.TemporaryDirectory() as environment_directory:
-        compose_stack = prepare_compose_stack(Path(environment_directory), api_publish_port=api_publish_port)
-        try:
-            start_stack(compose_stack)
-            check_health(flow_report, api_publish_port=api_publish_port)
-        except StackCommandFailedError as stack_error:
-            flow_report.record_check("stack", passed=False, detail=str(stack_error))
-        finally:
-            destroy_stack(compose_stack)
-    return flow_report.has_passed()
+def walk_health_journey(flow_stage: FlowStage) -> None:
+    check_health(flow_stage.flow_report, api_publish_port=flow_stage.api_publish_port)
 
 
 if __name__ == "__main__":
-    sys.exit(0 if run_health_flow() else 1)
+    sys.exit(0 if play_flow("health", flow_environment_lines=(), walk_journey=walk_health_journey) else 1)

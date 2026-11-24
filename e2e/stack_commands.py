@@ -9,6 +9,7 @@ REPOSITORY_DIRECTORY = Path(__file__).resolve().parent.parent
 E2E_COMPOSE_PROJECT_NAME_PREFIX = "starter-app-e2e"
 STACK_START_TIMEOUT_SECONDS = 600
 STACK_STOP_TIMEOUT_SECONDS = 120
+CONTAINER_LOG_READ_TIMEOUT_SECONDS = 60
 DATABASE_READ_TIMEOUT_SECONDS = 30
 
 
@@ -43,7 +44,9 @@ def build_public_base_url(api_publish_port: int) -> str:
     return f"http://localhost:{api_publish_port}"
 
 
-def prepare_compose_stack(environment_directory: Path, *, api_publish_port: int) -> ComposeStack:
+def prepare_compose_stack(
+    environment_directory: Path, *, api_publish_port: int, flow_environment_lines: tuple[str, ...]
+) -> ComposeStack:
     environment_file = environment_directory / "e2e.env"
     object_storage_publish_port = find_free_local_port()
     environment_lines = [
@@ -56,6 +59,7 @@ def prepare_compose_stack(environment_directory: Path, *, api_publish_port: int)
         f"STARTER_OBJECT_STORAGE_SECRET_ACCESS_KEY={secrets.token_urlsafe(32)}",
         f"STARTER_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL=http://127.0.0.1:{object_storage_publish_port}",
         f"OBJECT_STORAGE_PUBLISH_PORT={object_storage_publish_port}",
+        *flow_environment_lines,
     ]
     environment_file.write_text("\n".join(environment_lines) + "\n")
     environment_file.chmod(0o600)
@@ -111,6 +115,14 @@ def destroy_stack(compose_stack: ComposeStack) -> None:
         ["down", "--volumes", "--remove-orphans"],
         compose_stack=compose_stack,
         timeout_seconds=STACK_STOP_TIMEOUT_SECONDS,
+    )
+
+
+def read_container_logs(compose_stack: ComposeStack) -> str:
+    return run_compose(
+        ["logs", "--no-color", "--timestamps"],
+        compose_stack=compose_stack,
+        timeout_seconds=CONTAINER_LOG_READ_TIMEOUT_SECONDS,
     )
 
 

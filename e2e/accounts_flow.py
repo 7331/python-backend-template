@@ -1,22 +1,12 @@
-from pathlib import Path
 import sys
-import tempfile
 
 from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 
 from flow_report import FlowCheckFailedError, FlowReport
+from flow_run import FlowStage, play_flow
 from http_client import HttpReply, send_http_request, send_json_request
 from software_passkey import AuthenticationOptions, RegistrationOptions, SoftwarePasskey
-from stack_commands import (
-    ComposeStack,
-    StackCommandFailedError,
-    build_public_base_url,
-    destroy_stack,
-    find_free_local_port,
-    prepare_compose_stack,
-    read_database_value,
-    start_stack,
-)
+from stack_commands import ComposeStack, build_public_base_url, read_database_value
 
 API_PREFIX = "/api/v1"
 ACCOUNT_SESSION_COOKIE_NAME = "__Host-starter_account_session"
@@ -183,8 +173,10 @@ def sign_in(
     return signed_in_session
 
 
-def walk_passkey_journey(flow_report: FlowReport, *, api_publish_port: int, compose_stack: ComposeStack) -> None:
-    accounts_api = AccountsApi(api_publish_port=api_publish_port)
+def walk_passkey_journey(flow_stage: FlowStage) -> None:
+    flow_report = flow_stage.flow_report
+    compose_stack = flow_stage.compose_stack
+    accounts_api = AccountsApi(api_publish_port=flow_stage.api_publish_port)
     passkey = SoftwarePasskey(origin=accounts_api.origin)
     signed_up_session = sign_up(flow_report, accounts_api=accounts_api, passkey=passkey)
     check_current_account(
@@ -205,22 +197,5 @@ def walk_passkey_journey(flow_report: FlowReport, *, api_publish_port: int, comp
     )
 
 
-def run_accounts_flow() -> bool:
-    flow_report = FlowReport()
-    api_publish_port = find_free_local_port()
-    with tempfile.TemporaryDirectory() as environment_directory:
-        compose_stack = prepare_compose_stack(Path(environment_directory), api_publish_port=api_publish_port)
-        try:
-            start_stack(compose_stack)
-            walk_passkey_journey(flow_report, api_publish_port=api_publish_port, compose_stack=compose_stack)
-        except StackCommandFailedError as stack_error:
-            flow_report.record_check("stack", passed=False, detail=str(stack_error))
-        except FlowCheckFailedError:
-            pass
-        finally:
-            destroy_stack(compose_stack)
-    return flow_report.has_passed()
-
-
 if __name__ == "__main__":
-    sys.exit(0 if run_accounts_flow() else 1)
+    sys.exit(0 if play_flow("accounts", flow_environment_lines=(), walk_journey=walk_passkey_journey) else 1)
