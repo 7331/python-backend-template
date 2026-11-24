@@ -1,5 +1,6 @@
 import ast
 from collections.abc import Callable
+from functools import partial
 import io
 from pathlib import Path
 import re
@@ -167,11 +168,11 @@ def list_yaml_comments(text: str) -> list[Comment]:
     return comments
 
 
-def list_dockerfile_comments(text: str) -> list[Comment]:
+def list_whole_line_comments(text: str, *, comment_markers: tuple[str, ...]) -> list[Comment]:
     return [
         Comment(line_number=line_number, column=len(line) - len(line.lstrip()), text=line.strip())
         for line_number, line in enumerate(text.split("\n"), start=1)
-        if line.lstrip().startswith("#")
+        if line.lstrip().startswith(comment_markers)
     ]
 
 
@@ -199,13 +200,19 @@ def list_caddyfile_comments(text: str) -> list[Comment]:
 PYTHON_SYNTAX = CommentSyntax(list_comments=list_python_comments, directive=PYTHON_DIRECTIVE)
 SHELL_SYNTAX = CommentSyntax(list_comments=list_shell_comments, directive=SHELL_DIRECTIVE)
 YAML_SYNTAX = CommentSyntax(list_comments=list_yaml_comments, directive=YAML_DIRECTIVE)
-DOCKERFILE_SYNTAX = CommentSyntax(list_comments=list_dockerfile_comments, directive=DOCKERFILE_DIRECTIVE)
+DOCKERFILE_SYNTAX = CommentSyntax(
+    list_comments=partial(list_whole_line_comments, comment_markers=("#",)), directive=DOCKERFILE_DIRECTIVE
+)
 CADDYFILE_SYNTAX = CommentSyntax(list_comments=list_caddyfile_comments, directive=NO_DIRECTIVE)
+SYSTEMD_UNIT_SYNTAX = CommentSyntax(
+    list_comments=partial(list_whole_line_comments, comment_markers=("#", ";")), directive=NO_DIRECTIVE
+)
 SYNTAX_BY_SUFFIX = {
     ".py": PYTHON_SYNTAX,
     ".sh": SHELL_SYNTAX,
     ".yml": YAML_SYNTAX,
     ".yaml": YAML_SYNTAX,
+    ".service": SYSTEMD_UNIT_SYNTAX,
 }
 SYNTAX_BY_FILE_NAME = {
     "Dockerfile": DOCKERFILE_SYNTAX,

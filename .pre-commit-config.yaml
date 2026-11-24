@@ -153,7 +153,7 @@ repos:
         entry: uv run --project backend python backend/tools/check_comments.py
         language: system
         require_serial: true
-        files: \.(py|sh|ya?ml)$|(^|/)(Dockerfile|Caddyfile)$
+        files: \.(py|sh|ya?ml|service)$|(^|/)(Dockerfile|Caddyfile)$
         exclude: ^(backend/semgrep/tests/|backend/ty_fixture/|backend/vulture_whitelist\.py$)
       - id: deploy-shell-scripts
         name: shellcheck (deploy)
