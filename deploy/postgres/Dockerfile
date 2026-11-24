@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS wal_g_build
+FROM golang:1.27-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS wal_g_build
 ARG WAL_G_VERSION=v3.0.9
 ARG WAL_G_COMMIT=3e493188db28335fb93a45bd680c6ff8fc3028c1
 RUN apk add --no-cache build-base git libsodium-dev
